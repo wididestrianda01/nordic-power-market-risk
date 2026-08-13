@@ -29,3 +29,4 @@ CLAUDE.md
 # Planning docs (internal — see README.md for a project overview)
 docs/
 .codegraph/
+.serena/
