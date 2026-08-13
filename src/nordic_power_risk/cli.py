@@ -32,8 +32,26 @@ def _not_implemented(stage: str) -> None:
 
 @app.command()
 def validate() -> None:
-    """Pandera schema validation (Phase 1)."""
-    _not_implemented("validate")
+    """Pandera schema validation of every raw_* table (Phase 1)."""
+    from nordic_power_risk.validate.run import validate_all
+
+    config = get_config()
+    try:
+        results = validate_all(config)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+
+    failed = False
+    for result in results:
+        if result.passed:
+            typer.echo(f"{result.table}: PASS")
+        else:
+            failed = True
+            typer.echo(f"{result.table}: FAIL", err=True)
+            typer.echo(result.failure_cases, err=True)
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()
