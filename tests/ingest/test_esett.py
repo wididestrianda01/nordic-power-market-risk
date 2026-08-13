@@ -3,7 +3,7 @@ from datetime import date
 
 import responses
 
-from p16.ingest.esett import BASE_URL, fetch_imbalance_prices, parse_imbalance_prices
+from nordic_power_risk.ingest.esett import BASE_URL, fetch_imbalance_prices, parse_imbalance_prices
 
 SAMPLE_JSON = json.dumps(
     [

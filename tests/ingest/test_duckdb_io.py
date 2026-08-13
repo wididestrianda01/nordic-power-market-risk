@@ -1,8 +1,8 @@
-from p16.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 
 
 def test_get_connection_creates_parent_dirs(tmp_path):
-    db_path = tmp_path / "nested" / "p16.duckdb"
+    db_path = tmp_path / "nested" / "nordic_power_risk.duckdb"
     conn = get_connection(db_path)
     try:
         assert db_path.parent.exists()
@@ -11,7 +11,7 @@ def test_get_connection_creates_parent_dirs(tmp_path):
 
 
 def test_write_table_inserts_rows_and_returns_count(tmp_path):
-    conn = get_connection(tmp_path / "p16.duckdb")
+    conn = get_connection(tmp_path / "nordic_power_risk.duckdb")
     try:
         rows = [{"timestamp": "2020-01-01T00:00:00", "value": 1.0}]
         count = write_table(conn, "raw_test", rows)
@@ -22,7 +22,7 @@ def test_write_table_inserts_rows_and_returns_count(tmp_path):
 
 
 def test_write_table_replaces_existing_table(tmp_path):
-    conn = get_connection(tmp_path / "p16.duckdb")
+    conn = get_connection(tmp_path / "nordic_power_risk.duckdb")
     try:
         write_table(conn, "raw_test", [{"value": 1.0}])
         write_table(conn, "raw_test", [{"value": 2.0}, {"value": 3.0}])
@@ -32,7 +32,7 @@ def test_write_table_replaces_existing_table(tmp_path):
 
 
 def test_write_table_handles_empty_rows(tmp_path):
-    conn = get_connection(tmp_path / "p16.duckdb")
+    conn = get_connection(tmp_path / "nordic_power_risk.duckdb")
     try:
         count = write_table(conn, "raw_empty", [])
         assert count == 0

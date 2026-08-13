@@ -1,5 +1,5 @@
 [project]
-name = "p16"
+name = "nordic-power-risk"
 version = "0.1.0"
 description = "Nordic power-market decision and risk system (SE3 day-ahead/imbalance/reserve)"
 authors = [
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-p16 = "p16.cli:app"
+nordic-risk = "nordic_power_risk.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.24,<0.12.0"]
@@ -42,13 +42,13 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.13"
-packages = ["p16"]
+packages = ["nordic_power_risk"]
 mypy_path = "src"
 strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=p16 --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=nordic_power_risk --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
-source = ["src/p16"]
+source = ["src/nordic_power_risk"]

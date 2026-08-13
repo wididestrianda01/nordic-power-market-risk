@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from p16.cli import app
+from nordic_power_risk.cli import app
 
 runner = CliRunner()
 
@@ -13,7 +13,7 @@ def test_validate_stub_exits_nonzero():
 
 def test_ingest_without_token_exits_nonzero(monkeypatch):
     monkeypatch.delenv("ENTSOE_API_TOKEN", raising=False)
-    from p16 import config as config_module
+    from nordic_power_risk import config as config_module
 
     config_module.get_settings.cache_clear()
     result = runner.invoke(app, ["ingest"])

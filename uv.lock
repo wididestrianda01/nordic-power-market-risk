@@ -500,7 +500,7 @@ wheels = [
 ]
 
 [[package]]
-name = "p16"
+name = "nordic-power-risk"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

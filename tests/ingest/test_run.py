@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 import responses
 
-from p16.config import PipelineConfig, Settings, Window
-from p16.ingest.entsoe import BASE_URL as ENTSOE_URL
-from p16.ingest.esett import BASE_URL as ESETT_URL
-from p16.ingest.run import ingest_all
-from p16.ingest.smhi import BASE_URL as SMHI_URL
-from p16.ingest.svk import BASE_URL as SVK_URL
+from nordic_power_risk.config import PipelineConfig, Settings, Window
+from nordic_power_risk.ingest.entsoe import BASE_URL as ENTSOE_URL
+from nordic_power_risk.ingest.esett import BASE_URL as ESETT_URL
+from nordic_power_risk.ingest.run import ingest_all
+from nordic_power_risk.ingest.smhi import BASE_URL as SMHI_URL
+from nordic_power_risk.ingest.svk import BASE_URL as SVK_URL
 
 ENTSOE_XML = b"""<?xml version="1.0"?>
 <Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
@@ -33,7 +33,7 @@ def config(tmp_path) -> PipelineConfig:
     return PipelineConfig(
         zone="SE3",
         windows={"primary": Window(start=date(2020, 1, 1), end=date(2020, 1, 2))},
-        duckdb_path=Path(tmp_path / "p16.duckdb"),
+        duckdb_path=Path(tmp_path / "nordic_power_risk.duckdb"),
         manifest_path=Path(tmp_path / "manifest.json"),
     )
 

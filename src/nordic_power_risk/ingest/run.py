@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from p16.config import PipelineConfig, Settings
-from p16.ingest import entsoe, esett, smhi, svk
-from p16.ingest.duckdb_io import get_connection, write_table
-from p16.ingest.manifest import ManifestEntry, make_entry, write_manifest
+from nordic_power_risk.config import PipelineConfig, Settings
+from nordic_power_risk.ingest import entsoe, esett, smhi, svk
+from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.manifest import ManifestEntry, make_entry, write_manifest
 
 # SMHI station representative of SE3 (Stockholm-Arlanda), air temperature (parameter 1).
 SMHI_PARAMETER = 1

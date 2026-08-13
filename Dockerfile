@@ -23,5 +23,5 @@ COPY --from=builder /app/config.yaml /app/config.yaml
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENTRYPOINT ["p16"]
+ENTRYPOINT ["nordic-risk"]
 CMD ["ingest"]

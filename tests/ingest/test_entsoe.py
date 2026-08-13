@@ -2,7 +2,7 @@ from datetime import date
 
 import responses
 
-from p16.ingest.entsoe import BASE_URL, fetch_day_ahead_prices, parse_day_ahead_prices
+from nordic_power_risk.ingest.entsoe import BASE_URL, fetch_day_ahead_prices, parse_day_ahead_prices
 
 SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">

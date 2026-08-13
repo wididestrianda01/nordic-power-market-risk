@@ -3,7 +3,7 @@ import re
 
 import responses
 
-from p16.ingest.smhi import BASE_URL, fetch_observations, parse_observations
+from nordic_power_risk.ingest.smhi import BASE_URL, fetch_observations, parse_observations
 
 SAMPLE_JSON = json.dumps(
     {"value": [{"date": 1577836800000, "value": "-3.2"}]}

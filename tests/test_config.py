@@ -1,7 +1,7 @@
 from datetime import date
 from pathlib import Path
 
-from p16.config import PipelineConfig, Settings, get_config
+from nordic_power_risk.config import PipelineConfig, Settings, get_config
 
 
 def test_settings_reads_missing_token_as_none(monkeypatch):
@@ -29,8 +29,8 @@ def test_pipeline_config_validates_from_dict():
         {
             "zone": "SE3",
             "windows": {"primary": {"start": "2020-01-01", "end": "2020-12-31"}},
-            "duckdb_path": "data/p16.duckdb",
+            "duckdb_path": "data/nordic_power_risk.duckdb",
             "manifest_path": "data/manifest.json",
         }
     )
-    assert config.duckdb_path == Path("data/p16.duckdb")
+    assert config.duckdb_path == Path("data/nordic_power_risk.duckdb")

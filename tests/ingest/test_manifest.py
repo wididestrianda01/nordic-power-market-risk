@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from p16.ingest.manifest import checksum_of, make_entry, write_manifest
+from nordic_power_risk.ingest.manifest import checksum_of, make_entry, write_manifest
 
 
 def test_checksum_of_is_stable_sha256():

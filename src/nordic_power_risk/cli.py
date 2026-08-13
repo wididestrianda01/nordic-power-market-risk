@@ -1,10 +1,10 @@
-"""Single typer CLI: `p16 <stage>`. Thin wrapper — logic lives in the p16 package."""
+"""Single typer CLI: `nordic-risk <stage>`. Thin wrapper — logic lives in nordic_power_risk."""
 
 from __future__ import annotations
 
 import typer
 
-from p16.config import get_config, get_settings
+from nordic_power_risk.config import get_config, get_settings
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -12,7 +12,7 @@ app = typer.Typer(no_args_is_help=True)
 @app.command()
 def ingest() -> None:
     """Pull ENTSO-E/eSett/SvK/SMHI into DuckDB and write the source manifest."""
-    from p16.ingest.run import ingest_all
+    from nordic_power_risk.ingest.run import ingest_all
 
     config = get_config()
     settings = get_settings()
@@ -26,7 +26,7 @@ def ingest() -> None:
 
 
 def _not_implemented(stage: str) -> None:
-    typer.echo(f"p16 {stage}: not implemented yet (Phase 0 is ingest-only)", err=True)
+    typer.echo(f"nordic-risk {stage}: not implemented yet (Phase 0 is ingest-only)", err=True)
     raise typer.Exit(1)
 
 

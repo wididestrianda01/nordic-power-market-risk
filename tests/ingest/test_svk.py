@@ -2,7 +2,7 @@ import json
 
 import responses
 
-from p16.ingest.svk import BASE_URL, RESOURCE_IDS, fetch_resource, parse_resource
+from nordic_power_risk.ingest.svk import BASE_URL, RESOURCE_IDS, fetch_resource, parse_resource
 
 SAMPLE_JSON = json.dumps(
     {"result": {"records": [{"timestamp": "2020-01-01T00:00:00", "value": 12.3}]}}
