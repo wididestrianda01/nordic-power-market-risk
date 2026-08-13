@@ -1,0 +1,19 @@
+# Non-secret pipeline parameters. Frozen values from wayfinder decisions T08/T09 —
+# change only by amending the source ticket, not ad hoc.
+
+zone: SE3
+
+windows:
+  # T08: primary hourly spine, SvK CC BY 4.0, deep enough for the full forecast
+  # benchmark ladder.
+  primary:
+    start: "2019-01-01"
+    end: "2026-06-30"
+  # T08: secondary 15-minute exhibit window, reserved for the thesis-bridge
+  # chapter, not core training data.
+  secondary:
+    start: "2025-10-01"
+    end: "2026-07-31"
+
+duckdb_path: "data/p16.duckdb"
+manifest_path: "data/manifest.json"

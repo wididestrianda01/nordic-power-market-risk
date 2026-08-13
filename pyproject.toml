@@ -1,0 +1,54 @@
+[project]
+name = "p16"
+version = "0.1.0"
+description = "Nordic power-market decision and risk system (SE3 day-ahead/imbalance/reserve)"
+authors = [
+    { name = "wididestrianda01", email = "wididestrianda01@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.5.5",
+    "pandera>=0.32.1",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "typer>=0.27.1",
+]
+
+[project.scripts]
+p16 = "p16.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "responses>=0.26.2",
+    "ruff>=0.16.2",
+    "types-pyyaml>=6.0.12.20260724",
+    "types-requests>=2.33.0.20260712",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["p16"]
+mypy_path = "src"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=p16 --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["src/p16"]

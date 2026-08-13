@@ -1,0 +1,30 @@
+# Environments
+.venv/
+__pycache__/
+*.pyc
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+
+# Data
+data/
+*.duckdb
+manifest.json
+
+# Agent tooling / local scratch (not needed to replicate this project)
+.claude/
+.claude-flow/
+.context/
+.swarm/
+ruvector.db
+CLAUDE.md
+
+# Planning docs (internal — see README.md for a project overview)
+docs/
