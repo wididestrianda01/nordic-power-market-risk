@@ -9,10 +9,12 @@ requires-python = ">=3.13"
 dependencies = [
     "duckdb>=1.5.5",
     "holidays>=0.87",
+    "mlflow>=3.15.1",
     "pandera[pandas]>=0.32.1",
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
+    "scikit-learn>=1.9.0",
     "scipy>=1.16.2",
     "typer>=0.27.1",
 ]
@@ -49,6 +51,10 @@ python_version = "3.13"
 packages = ["nordic_power_risk"]
 mypy_path = "src"
 strict = true
+
+[[tool.mypy.overrides]]
+module = "sklearn.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

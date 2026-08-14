@@ -66,21 +66,32 @@ def features() -> None:
 
 @app.command()
 def models() -> None:
-    """Naive/seasonal-naive benchmark ladder over T08 rolling-origin folds (Phase 2)."""
-    from nordic_power_risk.models.run import run_benchmark_ladder
+    """Naive/seasonal-naive/LEAR benchmark ladder over T08 rolling-origin folds (Phase 2)."""
+    from nordic_power_risk.models.run import run_benchmark_ladder, select_best_rung
 
     config = get_config()
-    for result in run_benchmark_ladder(config):
+    results = run_benchmark_ladder(config)
+    for result in results:
         dm = (
             f"DM vs naive: stat={result.dm_stat:.3f} p={result.dm_pvalue:.4f}"
             if result.dm_stat is not None and result.dm_pvalue is not None
             else "DM vs naive: n/a (reference rung)"
         )
+        dm_sn = (
+            f"DM vs seasonal_naive: stat={result.dm_stat_vs_seasonal_naive:.3f} "
+            f"p={result.dm_pvalue_vs_seasonal_naive:.4f}"
+            if result.dm_stat_vs_seasonal_naive is not None
+            and result.dm_pvalue_vs_seasonal_naive is not None
+            else "DM vs seasonal_naive: n/a"
+        )
         typer.echo(
             f"{result.rung} (n={result.n_obs}): pinball={result.pinball_loss:.4f} "
             f"crps={result.crps:.4f} coverage_80={result.coverage_80:.3f} "
-            f"winkler_80={result.winkler_80:.4f} pit_mean={result.pit_mean:.3f} {dm}"
+            f"winkler_80={result.winkler_80:.4f} pit_mean={result.pit_mean:.3f} {dm} {dm_sn}"
         )
+
+    best = select_best_rung(results)
+    typer.echo(f"promoted: {best.rung} (pinball={best.pinball_loss:.4f})")
 
 
 @app.command()

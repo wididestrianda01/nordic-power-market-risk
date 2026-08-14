@@ -31,6 +31,8 @@ class PipelineConfig(BaseModel):
     windows: dict[str, Window]
     duckdb_path: Path
     manifest_path: Path
+    mlflow_tracking_uri: str = "sqlite:///data/mlflow.db"
+    mlflow_experiment: str = "day-ahead-ladder"
 
 
 @lru_cache

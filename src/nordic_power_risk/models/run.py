@@ -1,10 +1,15 @@
-"""Run naive/seasonal-naive benchmark ladder over T08 rolling-origin folds (Phase 2 ticket 01)."""
+"""Run naive/seasonal-naive/LEAR benchmark ladder over T08 rolling-origin folds
+(Phase 2 tickets 01, 02).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
+import mlflow
 import numpy as np
+import pandas as pd
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.features.split import rolling_origin_folds
@@ -15,6 +20,7 @@ from nordic_power_risk.models.baselines import (
     residual_quantiles,
     seasonal_naive_forecast,
 )
+from nordic_power_risk.models.lear import lear_forecast
 from nordic_power_risk.models.metrics import (
     diebold_mariano_test,
     interval_coverage,
@@ -23,10 +29,25 @@ from nordic_power_risk.models.metrics import (
     winkler_score,
 )
 
-RUNGS = {"naive": naive_forecast, "seasonal_naive": seasonal_naive_forecast}
+FoldForecaster = Callable[[pd.DataFrame, pd.DataFrame], tuple[pd.Series, pd.Series]]
+
+
+def _baseline_forecaster(point_fn: Callable[[pd.DataFrame], pd.Series]) -> FoldForecaster:
+    def forecaster(train: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+        return point_fn(train), point_fn(test)
+
+    return forecaster
+
+
+RUNGS: dict[str, FoldForecaster] = {
+    "naive": _baseline_forecaster(naive_forecast),
+    "seasonal_naive": _baseline_forecaster(seasonal_naive_forecast),
+    "lear": lear_forecast,
+}
 COVERAGE_LOWER_Q = 0.1
 COVERAGE_UPPER_Q = 0.9
 COVERAGE_ALPHA = 0.2  # 1 - (upper - lower)
+DM_SIGNIFICANCE_ALPHA = 0.05
 
 
 @dataclass(frozen=True)
@@ -40,6 +61,8 @@ class RungResult:
     pit_mean: float
     dm_stat: float | None
     dm_pvalue: float | None
+    dm_stat_vs_seasonal_naive: float | None
+    dm_pvalue_vs_seasonal_naive: float | None
 
 
 def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
@@ -62,9 +85,8 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
     for fold in folds:
         train = df[(event_date >= fold.train_start) & (event_date < fold.train_end)]
         test = df[(event_date >= fold.test_start) & (event_date < fold.test_end)]
-        for name, point_fn in RUNGS.items():
-            train_point = point_fn(train)
-            test_point = point_fn(test)
+        for name, forecaster in RUNGS.items():
+            train_point, test_point = forecaster(train, test)
             valid = test_point.notna() & test["price_eur_mwh"].notna()
             if not valid.any() or train_point.notna().sum() == 0:
                 continue
@@ -93,6 +115,7 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
 
     concatenated = {name: np.concatenate(row_losses[name]) for name in RUNGS if row_losses[name]}
     naive_loss_series = concatenated.get("naive")
+    seasonal_naive_loss_series = concatenated.get("seasonal_naive")
 
     results = []
     for name in RUNGS:
@@ -103,6 +126,10 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
         dm_pvalue: float | None = None
         if name != "naive" and naive_loss_series is not None:
             dm_stat, dm_pvalue = diebold_mariano_test(loss_series, naive_loss_series)
+        dm_stat_sn: float | None = None
+        dm_pvalue_sn: float | None = None
+        if name not in ("naive", "seasonal_naive") and seasonal_naive_loss_series is not None:
+            dm_stat_sn, dm_pvalue_sn = diebold_mariano_test(loss_series, seasonal_naive_loss_series)
         results.append(
             RungResult(
                 rung=name,
@@ -114,9 +141,57 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
                 pit_mean=float(np.mean(np.concatenate(pit_vals[name]))),
                 dm_stat=dm_stat,
                 dm_pvalue=dm_pvalue,
+                dm_stat_vs_seasonal_naive=dm_stat_sn,
+                dm_pvalue_vs_seasonal_naive=dm_pvalue_sn,
             )
         )
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+    mlflow.set_experiment(config.mlflow_experiment)
+    for result in results:
+        with mlflow.start_run(run_name=result.rung):
+            mlflow.log_metrics(
+                {
+                    "n_obs": result.n_obs,
+                    "pinball_loss": result.pinball_loss,
+                    "crps": result.crps,
+                    "coverage_80": result.coverage_80,
+                    "winkler_80": result.winkler_80,
+                    "pit_mean": result.pit_mean,
+                    **({"dm_stat": result.dm_stat} if result.dm_stat is not None else {}),
+                    **({"dm_pvalue": result.dm_pvalue} if result.dm_pvalue is not None else {}),
+                    **(
+                        {"dm_stat_vs_seasonal_naive": result.dm_stat_vs_seasonal_naive}
+                        if result.dm_stat_vs_seasonal_naive is not None
+                        else {}
+                    ),
+                    **(
+                        {"dm_pvalue_vs_seasonal_naive": result.dm_pvalue_vs_seasonal_naive}
+                        if result.dm_pvalue_vs_seasonal_naive is not None
+                        else {}
+                    ),
+                }
+            )
+
     return results
 
 
-__all__ = ["RungResult", "run_benchmark_ladder"]
+def select_best_rung(
+    results: list[RungResult], *, alpha: float = DM_SIGNIFICANCE_ALPHA
+) -> RungResult:
+    """Pick the lowest-pinball-loss rung among those not significantly worse than naive.
+
+    A rung is eligible if it's the naive reference itself (dm_pvalue is None) or if its
+    DM test is significant AND directionally better than naive (dm_stat < 0) — a plain
+    p < alpha check would also admit rungs that are significantly worse.
+    """
+    eligible = [
+        r
+        for r in results
+        if r.dm_pvalue is None
+        or (r.dm_stat is not None and r.dm_pvalue < alpha and r.dm_stat < 0)
+    ]
+    return min(eligible, key=lambda r: r.pinball_loss)
+
+
+__all__ = ["RungResult", "run_benchmark_ladder", "select_best_rung"]
