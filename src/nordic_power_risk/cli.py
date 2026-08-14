@@ -56,14 +56,31 @@ def validate() -> None:
 
 @app.command()
 def features() -> None:
-    """Feature engineering (Phase 1/2)."""
-    _not_implemented("features")
+    """Day-ahead SE3 feature table: as_of()-gated price lags + calendar features (Phase 2)."""
+    from nordic_power_risk.features.run import build_all_features
+
+    config = get_config()
+    result = build_all_features(config)
+    typer.echo(f"{result.table}: {result.row_count} rows -> {config.duckdb_path}")
 
 
 @app.command()
 def models() -> None:
-    """Forecast model training (Phase 2)."""
-    _not_implemented("models")
+    """Naive/seasonal-naive benchmark ladder over T08 rolling-origin folds (Phase 2)."""
+    from nordic_power_risk.models.run import run_benchmark_ladder
+
+    config = get_config()
+    for result in run_benchmark_ladder(config):
+        dm = (
+            f"DM vs naive: stat={result.dm_stat:.3f} p={result.dm_pvalue:.4f}"
+            if result.dm_stat is not None and result.dm_pvalue is not None
+            else "DM vs naive: n/a (reference rung)"
+        )
+        typer.echo(
+            f"{result.rung} (n={result.n_obs}): pinball={result.pinball_loss:.4f} "
+            f"crps={result.crps:.4f} coverage_80={result.coverage_80:.3f} "
+            f"winkler_80={result.winkler_80:.4f} pit_mean={result.pit_mean:.3f} {dm}"
+        )
 
 
 @app.command()
