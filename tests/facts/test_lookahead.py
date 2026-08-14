@@ -17,7 +17,9 @@ from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 FACT_TABLES = [
     "fact_day_ahead_price",
     "fact_svk_day_ahead_price",
-    "fact_svk_fcr_capacity",
+    "fact_svk_fcr_d_up",
+    "fact_svk_fcr_d_down",
+    "fact_svk_fcr_n",
     "fact_svk_afrr_mfrr_capacity",
     "fact_imbalance_price",
     "fact_smhi_observations",
@@ -48,10 +50,23 @@ def _seed_across_spine(config: PipelineConfig, event_times: pd.DatetimeIndex) ->
             conn, "raw_svk_day_ahead_price", [{"timestamp": t, "value": 10.0} for t in iso_rows]
         )
         write_table(
-            conn, "raw_svk_fcr_capacity", [{"timestamp": t, "value": 5.0} for t in iso_rows]
+            conn,
+            "raw_svk_fcr_capacity",
+            [
+                {
+                    "start_time_utc": t,
+                    "price": 5.0,
+                    "reserve_product": "FCRD",
+                    "reserve_direction": "up",
+                    "bidding_zone": "SE3",
+                }
+                for t in iso_rows
+            ],
         )
         write_table(
-            conn, "raw_svk_afrr_mfrr_capacity", [{"timestamp": t, "value": 3.0} for t in iso_rows]
+            conn,
+            "raw_svk_afrr_mfrr_capacity",
+            [{"start_time_utc": t, "price": 3.0} for t in iso_rows],
         )
         write_table(
             conn,
@@ -96,8 +111,20 @@ def test_imbalance_estimated_final_swap_resolves_at_t_plus_45(tmp_path: Path) ->
         )
         write_table(conn, "raw_entsoe_day_ahead_price", [{"timestamp": ts, "price_eur_mwh": 10.0}])
         write_table(conn, "raw_svk_day_ahead_price", [{"timestamp": ts, "value": 10.0}])
-        write_table(conn, "raw_svk_fcr_capacity", [{"timestamp": ts, "value": 5.0}])
-        write_table(conn, "raw_svk_afrr_mfrr_capacity", [{"timestamp": ts, "value": 3.0}])
+        write_table(
+            conn,
+            "raw_svk_fcr_capacity",
+            [
+                {
+                    "start_time_utc": ts,
+                    "price": 5.0,
+                    "reserve_product": "FCRD",
+                    "reserve_direction": "up",
+                    "bidding_zone": "SE3",
+                }
+            ],
+        )
+        write_table(conn, "raw_svk_afrr_mfrr_capacity", [{"start_time_utc": ts, "price": 3.0}])
         write_table(conn, "raw_smhi_observations", [{"timestamp": 1705276800000, "value": -2.5}])
     finally:
         conn.close()

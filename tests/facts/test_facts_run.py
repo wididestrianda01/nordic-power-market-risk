@@ -17,10 +17,37 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
         {"timestamp": "2024-01-15T00:00:00", "value": 10.0},
     ],
     "raw_svk_fcr_capacity": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 5.0},
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 5.0,
+            "reserve_product": "FCRD",
+            "reserve_direction": "up",
+            "bidding_zone": "SE3",
+        },
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 6.0,
+            "reserve_product": "FCRD",
+            "reserve_direction": "down",
+            "bidding_zone": "SE3",
+        },
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 7.0,
+            "reserve_product": "FCRN",
+            "reserve_direction": "symmetric",
+            "bidding_zone": "SE3",
+        },
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 99.0,
+            "reserve_product": "FCRD",
+            "reserve_direction": "up",
+            "bidding_zone": "SE4",
+        },
     ],
     "raw_svk_afrr_mfrr_capacity": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 3.0},
+        {"start_time_utc": "2024-01-15T00:00:00", "price": 3.0},
     ],
     "raw_smhi_observations": [
         {"timestamp": 1705276800000, "value": -2.5},  # 2024-01-15T00:00:00
@@ -56,7 +83,9 @@ def test_build_all_facts_writes_every_fact_table(tmp_path: Path) -> None:
     assert tables == {
         "fact_day_ahead_price": 2,
         "fact_svk_day_ahead_price": 1,
-        "fact_svk_fcr_capacity": 1,
+        "fact_svk_fcr_d_up": 1,
+        "fact_svk_fcr_d_down": 1,
+        "fact_svk_fcr_n": 1,
         "fact_svk_afrr_mfrr_capacity": 1,
         "fact_imbalance_price": 2,  # estimated + final per raw row
         "fact_smhi_observations": 1,

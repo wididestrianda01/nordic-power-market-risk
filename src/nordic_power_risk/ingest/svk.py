@@ -13,11 +13,12 @@ import requests
 
 BASE_URL = "https://data.svk.se/api/3/action/datastore_search"
 
-# CKAN resource_id per series (T03 research).
+# CKAN resource_id per series (T03 research corrected: the two capacity
+# resource_ids were swapped — verified against live CKAN field/records).
 RESOURCE_IDS = {
     "day_ahead_price": "0c56e30d-8fce-4c27-afc8-621c230ae34d",
-    "fcr_capacity": "6351d2cc-1657-43eb-b112-b8408c700529",
-    "afrr_mfrr_capacity": "72ef5ec0-d0d7-4d22-95e9-4f22b3048af4",
+    "fcr_capacity": "72ef5ec0-d0d7-4d22-95e9-4f22b3048af4",
+    "afrr_mfrr_capacity": "6351d2cc-1657-43eb-b112-b8408c700529",
 }
 
 

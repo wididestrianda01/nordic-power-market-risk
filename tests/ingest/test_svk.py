@@ -32,3 +32,10 @@ def test_parse_resource_extracts_records():
 
 def test_resource_ids_cover_expected_series():
     assert set(RESOURCE_IDS) == {"day_ahead_price", "fcr_capacity", "afrr_mfrr_capacity"}
+
+
+def test_resource_ids_fcr_and_afrr_not_swapped():
+    # fcr_capacity's CKAN resource serves FCRD/FCRN records; afrr_mfrr_capacity's
+    # serves aFRRCapacityMarket records. Regression guard for a T03 mapping bug.
+    assert RESOURCE_IDS["fcr_capacity"] == "72ef5ec0-d0d7-4d22-95e9-4f22b3048af4"
+    assert RESOURCE_IDS["afrr_mfrr_capacity"] == "6351d2cc-1657-43eb-b112-b8408c700529"

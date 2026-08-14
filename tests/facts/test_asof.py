@@ -18,10 +18,16 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
         {"timestamp": "2024-01-15T00:00:00", "value": 10.0},
     ],
     "raw_svk_fcr_capacity": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 5.0},
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 5.0,
+            "reserve_product": "FCRD",
+            "reserve_direction": "up",
+            "bidding_zone": "SE3",
+        },
     ],
     "raw_svk_afrr_mfrr_capacity": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 3.0},
+        {"start_time_utc": "2024-01-15T00:00:00", "price": 3.0},
     ],
     "raw_smhi_observations": [
         {"timestamp": 1705276800000, "value": -2.5},  # 2024-01-15T00:00:00

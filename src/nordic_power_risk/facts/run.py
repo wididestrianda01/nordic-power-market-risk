@@ -19,6 +19,7 @@ from nordic_power_risk.facts.rules import (
     fcr_capacity_issue_time,
 )
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.validate.schemas import RAW_TABLE_TIMESTAMP_COLUMNS
 
 # smhi stores epoch-millisecond ints; every other raw table stores ISO 8601 strings.
 _EPOCH_MS_TABLES = {"raw_smhi_observations"}
@@ -32,10 +33,11 @@ class FactBuildResult:
 
 def _read_raw(conn: duckdb.DuckDBPyConnection, table: str) -> pd.DataFrame:
     df = conn.execute(f"SELECT * FROM {table}").fetchdf()
+    source_column = RAW_TABLE_TIMESTAMP_COLUMNS.get(table, "timestamp")
     if table in _EPOCH_MS_TABLES:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["timestamp"] = pd.to_datetime(df[source_column], unit="ms")
     else:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df[source_column])
     return df
 
 
@@ -48,6 +50,26 @@ def _price_rows(
         {"event_time": event_time, "issue_time": issue_time_fn(event_time), value_column: value}
         for event_time, value in zip(event_times, values, strict=True)
     ]
+
+
+# FCR raw rows mix product (FCRD/FCRN), direction (up/down/symmetric), and zone in
+# one table; each (product, direction) pair is its own T09 secondary target.
+_FCR_TARGETS = [
+    ("fact_svk_fcr_d_up", "FCRD", "up"),
+    ("fact_svk_fcr_d_down", "FCRD", "down"),
+    ("fact_svk_fcr_n", "FCRN", "symmetric"),
+]
+
+
+def _fcr_rows(
+    df: pd.DataFrame, zone: str, reserve_product: str, reserve_direction: str
+) -> list[dict[str, Any]]:
+    subset = df[
+        (df["bidding_zone"] == zone)
+        & (df["reserve_product"] == reserve_product)
+        & (df["reserve_direction"] == reserve_direction)
+    ]
+    return _price_rows(subset, "price", fcr_capacity_issue_time)
 
 
 def _imbalance_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -95,28 +117,46 @@ def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
                 day_ahead_issue_time,
             ),
             ("raw_svk_day_ahead_price", "fact_svk_day_ahead_price", "value", day_ahead_issue_time),
-            ("raw_svk_fcr_capacity", "fact_svk_fcr_capacity", "value", fcr_capacity_issue_time),
             (
                 "raw_svk_afrr_mfrr_capacity",
                 "fact_svk_afrr_mfrr_capacity",
-                "value",
+                "price",
                 afrr_mfrr_capacity_issue_time,
             ),
         ]
         for raw_table, fact_table, value_column, issue_time_fn in source_specs:
             df = _read_raw(conn, raw_table)
             rows = _price_rows(df, value_column, issue_time_fn)
-            count = write_table(conn, fact_table, rows)
+            price_columns = {
+                "event_time": "TIMESTAMP",
+                "issue_time": "TIMESTAMP",
+                value_column: "DOUBLE",
+            }
+            count = write_table(conn, fact_table, rows, columns=price_columns)
+            results.append(FactBuildResult(table=fact_table, row_count=count))
+
+        fcr_df = _read_raw(conn, "raw_svk_fcr_capacity")
+        fcr_columns = {"event_time": "TIMESTAMP", "issue_time": "TIMESTAMP", "price": "DOUBLE"}
+        for fact_table, reserve_product, reserve_direction in _FCR_TARGETS:
+            rows = _fcr_rows(fcr_df, config.zone, reserve_product, reserve_direction)
+            count = write_table(conn, fact_table, rows, columns=fcr_columns)
             results.append(FactBuildResult(table=fact_table, row_count=count))
 
         imbalance_df = _read_raw(conn, "raw_esett_imbalance_price")
         imbalance_rows = _imbalance_rows(imbalance_df)
-        count = write_table(conn, "fact_imbalance_price", imbalance_rows)
+        imbalance_columns = {
+            "event_time": "TIMESTAMP",
+            "issue_time": "TIMESTAMP",
+            "imbalance_price_eur_mwh": "DOUBLE",
+            "price_type": "VARCHAR",
+        }
+        count = write_table(conn, "fact_imbalance_price", imbalance_rows, columns=imbalance_columns)
         results.append(FactBuildResult(table="fact_imbalance_price", row_count=count))
 
         smhi_df = _read_raw(conn, "raw_smhi_observations")
         smhi_rows = _smhi_rows(smhi_df)
-        count = write_table(conn, "fact_smhi_observations", smhi_rows)
+        smhi_columns = {"event_time": "TIMESTAMP", "issue_time": "TIMESTAMP", "value": "DOUBLE"}
+        count = write_table(conn, "fact_smhi_observations", smhi_rows, columns=smhi_columns)
         results.append(FactBuildResult(table="fact_smhi_observations", row_count=count))
     finally:
         conn.close()
