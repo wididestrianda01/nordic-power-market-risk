@@ -75,6 +75,7 @@ def test_benchmark_ladder_reports_naive_and_seasonal_naive_with_dm_test(
     assert "naive" in by_rung
     assert "seasonal_naive" in by_rung
     assert "lear" in by_rung
+    assert "dnn" in by_rung
     assert by_rung["naive"].n_obs > 0
     assert by_rung["naive"].dm_stat is None  # naive is the reference rung
     assert by_rung["seasonal_naive"].dm_stat is not None
@@ -83,6 +84,10 @@ def test_benchmark_ladder_reports_naive_and_seasonal_naive_with_dm_test(
     assert by_rung["lear"].dm_pvalue is not None
     assert by_rung["lear"].dm_stat_vs_seasonal_naive is not None
     assert by_rung["lear"].dm_pvalue_vs_seasonal_naive is not None
+    assert by_rung["dnn"].dm_stat is not None
+    assert by_rung["dnn"].dm_pvalue is not None
+    assert by_rung["dnn"].dm_stat_vs_seasonal_naive is not None
+    assert by_rung["dnn"].dm_pvalue_vs_seasonal_naive is not None
     assert by_rung["seasonal_naive"].dm_stat_vs_seasonal_naive is None
     for result in results:
         assert result.pinball_loss >= 0
@@ -92,6 +97,14 @@ def test_benchmark_ladder_reports_naive_and_seasonal_naive_with_dm_test(
 
     best = select_best_rung(results)
     assert best.rung in by_rung
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        forecast_rows = conn.execute("SELECT * FROM forecast_day_ahead").fetchdf()
+    finally:
+        conn.close()
+    assert len(forecast_rows) > 0
+    assert "q0_5" in forecast_rows.columns
 
 
 class TestSelectBestRung:

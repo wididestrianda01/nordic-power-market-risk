@@ -66,7 +66,7 @@ def features() -> None:
 
 @app.command()
 def models() -> None:
-    """Naive/seasonal-naive/LEAR benchmark ladder over T08 rolling-origin folds (Phase 2)."""
+    """Naive/seasonal-naive/LEAR/DNN benchmark ladder over T08 rolling-origin folds (Phase 2)."""
     from nordic_power_risk.models.run import run_benchmark_ladder, select_best_rung
 
     config = get_config()

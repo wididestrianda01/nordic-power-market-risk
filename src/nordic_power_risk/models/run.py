@@ -13,13 +13,14 @@ import pandas as pd
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.features.split import rolling_origin_folds
-from nordic_power_risk.ingest.duckdb_io import get_connection
+from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 from nordic_power_risk.models.baselines import (
     naive_forecast,
     quantile_forecast,
     residual_quantiles,
     seasonal_naive_forecast,
 )
+from nordic_power_risk.models.dnn import dnn_forecast
 from nordic_power_risk.models.lear import lear_forecast
 from nordic_power_risk.models.metrics import (
     diebold_mariano_test,
@@ -43,6 +44,7 @@ RUNGS: dict[str, FoldForecaster] = {
     "naive": _baseline_forecaster(naive_forecast),
     "seasonal_naive": _baseline_forecaster(seasonal_naive_forecast),
     "lear": lear_forecast,
+    "dnn": dnn_forecast,
 }
 COVERAGE_LOWER_Q = 0.1
 COVERAGE_UPPER_Q = 0.9
@@ -81,6 +83,7 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
     winkler_vals: dict[str, list[float]] = {name: [] for name in RUNGS}
     pit_vals: dict[str, list[np.ndarray]] = {name: [] for name in RUNGS}
     n_obs: dict[str, int] = {name: 0 for name in RUNGS}
+    forecast_records: dict[str, list[dict[str, object]]] = {name: [] for name in RUNGS}
 
     for fold in folds:
         train = df[(event_date >= fold.train_start) & (event_date < fold.train_end)]
@@ -112,6 +115,13 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
             )
             pit_vals[name].append(pit_values(y_true, q_forecasts_arr))
             n_obs[name] += int(valid.sum())
+
+            event_times = test.loc[valid, "event_time"]
+            for row_pos, event_time in enumerate(event_times):
+                record: dict[str, object] = {"event_time": event_time}
+                for quantile, values in q_forecasts_arr.items():
+                    record[f"q{str(quantile).replace('.', '_')}"] = float(values[row_pos])
+                forecast_records[name].append(record)
 
     concatenated = {name: np.concatenate(row_losses[name]) for name in RUNGS if row_losses[name]}
     naive_loss_series = concatenated.get("naive")
@@ -172,6 +182,15 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
                     ),
                 }
             )
+
+    if results:
+        best = select_best_rung(results)
+        if forecast_records[best.rung]:
+            conn = get_connection(config.duckdb_path)
+            try:
+                write_table(conn, "forecast_day_ahead", forecast_records[best.rung])
+            finally:
+                conn.close()
 
     return results
 
