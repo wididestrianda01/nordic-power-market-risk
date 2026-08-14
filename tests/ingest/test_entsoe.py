@@ -2,7 +2,12 @@ from datetime import date
 
 import responses
 
-from nordic_power_risk.ingest.entsoe import BASE_URL, fetch_day_ahead_prices, parse_day_ahead_prices
+from nordic_power_risk.ingest.entsoe import (
+    BASE_URL,
+    chunk_date_range,
+    fetch_day_ahead_prices,
+    parse_day_ahead_prices,
+)
 
 SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
@@ -28,8 +33,30 @@ SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 @responses.activate
 def test_fetch_day_ahead_prices_calls_entsoe_api():
     responses.add(responses.GET, BASE_URL, body=SAMPLE_XML, status=200)
-    raw = fetch_day_ahead_prices("token", "SE3", date(2020, 1, 1), date(2020, 1, 2))
-    assert raw == SAMPLE_XML
+    raw_chunks = fetch_day_ahead_prices("token", "SE3", date(2020, 1, 1), date(2020, 1, 2))
+    assert raw_chunks == [SAMPLE_XML]
+
+
+@responses.activate
+def test_fetch_day_ahead_prices_issues_one_request_per_chunk():
+    responses.add(responses.GET, BASE_URL, body=SAMPLE_XML, status=200)
+    raw_chunks = fetch_day_ahead_prices("token", "SE3", date(2019, 1, 1), date(2021, 6, 1))
+    assert len(raw_chunks) == 3
+    assert len(responses.calls) == 3
+
+
+def test_chunk_date_range_splits_multi_year_span_into_year_chunks():
+    chunks = chunk_date_range(date(2019, 1, 1), date(2021, 6, 1))
+    assert chunks == [
+        (date(2019, 1, 1), date(2020, 1, 1)),
+        (date(2020, 1, 1), date(2020, 12, 31)),
+        (date(2020, 12, 31), date(2021, 6, 1)),
+    ]
+
+
+def test_chunk_date_range_single_chunk_for_short_span():
+    chunks = chunk_date_range(date(2020, 1, 1), date(2020, 1, 2))
+    assert chunks == [(date(2020, 1, 1), date(2020, 1, 2))]
 
 
 def test_parse_day_ahead_prices_advances_hour_and_day():

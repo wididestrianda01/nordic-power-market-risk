@@ -24,22 +24,45 @@ ZONE_EIC = {
 }
 
 
+MAX_CHUNK_DAYS = 365
+
+
+def chunk_date_range(
+    start: date, end: date, *, max_days: int = MAX_CHUNK_DAYS
+) -> list[tuple[date, date]]:
+    """Split [start, end) into consecutive [chunk_start, chunk_end) spans of at most max_days."""
+    chunks = []
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=max_days), end)
+        chunks.append((chunk_start, chunk_end))
+        chunk_start = chunk_end
+    return chunks
+
+
 def fetch_day_ahead_prices(
     token: str, zone: str, start: date, end: date, *, timeout: float = 30.0
-) -> bytes:
-    """Raw XML response for document A44 (day-ahead prices) over [start, end)."""
+) -> list[bytes]:
+    """Raw XML responses for document A44 (day-ahead prices) over [start, end).
+
+    ENTSO-E rejects A44 requests spanning more than ~1 year, so [start, end) is
+    split into <=1-year chunks and fetched with one request per chunk.
+    """
     eic = ZONE_EIC[zone]
-    params = {
-        "securityToken": token,
-        "documentType": "A44",
-        "in_Domain": eic,
-        "out_Domain": eic,
-        "periodStart": start.strftime("%Y%m%d0000"),
-        "periodEnd": end.strftime("%Y%m%d0000"),
-    }
-    response = requests.get(BASE_URL, params=params, timeout=timeout)
-    response.raise_for_status()
-    return response.content
+    raw_chunks = []
+    for chunk_start, chunk_end in chunk_date_range(start, end):
+        params = {
+            "securityToken": token,
+            "documentType": "A44",
+            "in_Domain": eic,
+            "out_Domain": eic,
+            "periodStart": chunk_start.strftime("%Y%m%d0000"),
+            "periodEnd": chunk_end.strftime("%Y%m%d0000"),
+        }
+        response = requests.get(BASE_URL, params=params, timeout=timeout)
+        response.raise_for_status()
+        raw_chunks.append(response.content)
+    return raw_chunks
 
 
 def parse_day_ahead_prices(raw: bytes) -> list[dict[str, Any]]:

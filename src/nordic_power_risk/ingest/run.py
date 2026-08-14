@@ -24,8 +24,10 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
     entries: list[ManifestEntry] = []
 
     try:
-        raw = entsoe.fetch_day_ahead_prices(settings.entsoe_api_token, config.zone, start, end)
-        rows = entsoe.parse_day_ahead_prices(raw)
+        raw_chunks = entsoe.fetch_day_ahead_prices(
+            settings.entsoe_api_token, config.zone, start, end
+        )
+        rows = [row for raw in raw_chunks for row in entsoe.parse_day_ahead_prices(raw)]
         row_count = write_table(conn, "raw_entsoe_day_ahead_price", rows)
         entries.append(
             make_entry(
@@ -34,7 +36,7 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
                 coverage_start=start,
                 coverage_end=end,
                 endpoint=entsoe.BASE_URL,
-                raw=raw,
+                raw=b"".join(raw_chunks),
                 row_count=row_count,
             )
         )
