@@ -14,9 +14,6 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
     "raw_esett_imbalance_price": [
         {"timestamp": "2024-01-15T00:00:00", "imbalance_price_eur_mwh": 15.0},
     ],
-    "raw_svk_day_ahead_price": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 10.0},
-    ],
     "raw_svk_fcr_capacity": [
         {
             "start_time_utc": "2024-01-15T00:00:00",

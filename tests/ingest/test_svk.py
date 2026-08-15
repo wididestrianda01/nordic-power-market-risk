@@ -20,7 +20,7 @@ SAMPLE_JSON = json.dumps(
 @responses.activate
 def test_fetch_resource_calls_ckan_datastore_search():
     responses.add(responses.GET, BASE_URL, body=SAMPLE_JSON, status=200)
-    raw = fetch_resource("day_ahead_price")
+    raw = fetch_resource("fcr_capacity")
     assert raw == SAMPLE_JSON
 
 
@@ -39,7 +39,7 @@ def test_parse_resource_extracts_records():
 
 
 def test_resource_ids_cover_expected_series():
-    assert set(RESOURCE_IDS) == {"day_ahead_price", "fcr_capacity", "afrr_mfrr_capacity"}
+    assert set(RESOURCE_IDS) == {"fcr_capacity", "afrr_mfrr_capacity"}
 
 
 ACTIVATION_JSON = json.dumps(

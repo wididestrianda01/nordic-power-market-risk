@@ -16,7 +16,6 @@ from pandera.pandas import Check, Column, DataFrameSchema
 RAW_TABLE_VALUE_COLUMNS: dict[str, str] = {
     "raw_entsoe_day_ahead_price": "price_eur_mwh",
     "raw_esett_imbalance_price": "imbalance_price_eur_mwh",
-    "raw_svk_day_ahead_price": "value",
     "raw_svk_fcr_capacity": "price",
     "raw_svk_afrr_mfrr_capacity": "price",
     "raw_smhi_observations": "value",

@@ -185,7 +185,6 @@ def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
                 "price_eur_mwh",
                 day_ahead_issue_time,
             ),
-            ("raw_svk_day_ahead_price", "fact_svk_day_ahead_price", "value", day_ahead_issue_time),
             (
                 "raw_svk_afrr_mfrr_capacity",
                 "fact_svk_afrr_mfrr_capacity",

@@ -94,7 +94,12 @@ def fetch_day_ahead_prices(
 
 
 def parse_day_ahead_prices(raw: bytes) -> list[dict[str, Any]]:
-    """XML Point/price.amount rows -> [{"timestamp": iso str, "price_eur_mwh": float}]."""
+    """XML Point/price.amount rows -> [{"timestamp": iso str, "price_eur_mwh": float}].
+
+    Day-ahead moved to 15-minute resolution on 2025-10-01 (SDAC 15-min MTU), so
+    PT15M series are aggregated to the hourly spine (arithmetic mean of the four
+    quarter-hour prices); PT60M series pass through unchanged.
+    """
     root = ET.fromstring(raw)
     rows: list[dict[str, Any]] = []
     for series in root.findall("ns:TimeSeries", NAMESPACE):
@@ -103,14 +108,33 @@ def parse_day_ahead_prices(raw: bytes) -> list[dict[str, Any]]:
             continue
         start_str = period.findtext("ns:timeInterval/ns:start", namespaces=NAMESPACE)
         resolution = period.findtext("ns:resolution", namespaces=NAMESPACE)
-        if start_str is None or resolution != "PT60M":
+        if start_str is None or resolution not in {"PT60M", "PT15M"}:
             continue
         period_start = datetime.strptime(start_str, "%Y-%m-%dT%H:%MZ")
-        for point in period.findall("ns:Point", NAMESPACE):
-            position = int(point.findtext("ns:position", namespaces=NAMESPACE, default="0"))
-            price = float(point.findtext("ns:price.amount", namespaces=NAMESPACE, default="nan"))
-            timestamp = period_start + timedelta(hours=position - 1)
-            rows.append({"timestamp": timestamp.isoformat(), "price_eur_mwh": price})
+        if resolution == "PT60M":
+            for point in period.findall("ns:Point", NAMESPACE):
+                position = int(point.findtext("ns:position", namespaces=NAMESPACE, default="0"))
+                price = float(
+                    point.findtext("ns:price.amount", namespaces=NAMESPACE, default="nan")
+                )
+                timestamp = period_start + timedelta(hours=position - 1)
+                rows.append({"timestamp": timestamp.isoformat(), "price_eur_mwh": price})
+        else:
+            hourly: dict[datetime, list[float]] = {}
+            for point in period.findall("ns:Point", NAMESPACE):
+                position = int(point.findtext("ns:position", namespaces=NAMESPACE, default="0"))
+                price = float(
+                    point.findtext("ns:price.amount", namespaces=NAMESPACE, default="nan")
+                )
+                timestamp = period_start + timedelta(hours=(position - 1) // 4)
+                hourly.setdefault(timestamp, []).append(price)
+            for timestamp, prices in hourly.items():
+                rows.append(
+                    {
+                        "timestamp": timestamp.isoformat(),
+                        "price_eur_mwh": sum(prices) / len(prices),
+                    }
+                )
     return rows
 
 

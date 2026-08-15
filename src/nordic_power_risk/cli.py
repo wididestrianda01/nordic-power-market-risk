@@ -55,13 +55,26 @@ def validate() -> None:
 
 
 @app.command()
+def facts() -> None:
+    """Build event_time/issue_time fact tables from raw_* (Phase 1)."""
+    from nordic_power_risk.facts.run import build_all_facts
+
+    config = get_config()
+    results = build_all_facts(config)
+    for result in results:
+        typer.echo(f"{result.table}: {result.row_count} rows -> {config.duckdb_path}")
+
+
+@app.command()
 def features() -> None:
-    """Day-ahead SE3 feature table: as_of()-gated price lags + calendar features (Phase 2)."""
-    from nordic_power_risk.features.run import build_all_features
+    """Build day-ahead + secondary (FCR/imbalance) feature tables (Phase 2)."""
+    from nordic_power_risk.features.run import build_all_features, build_secondary_features
 
     config = get_config()
     result = build_all_features(config)
     typer.echo(f"{result.table}: {result.row_count} rows -> {config.duckdb_path}")
+    for result in build_secondary_features(config):
+        typer.echo(f"{result.table}: {result.row_count} rows -> {config.duckdb_path}")
 
 
 @app.command()

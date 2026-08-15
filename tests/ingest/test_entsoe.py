@@ -22,11 +22,19 @@ SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
       <Point><position>25</position><price.amount>20.0</price.amount></Point>
     </Period>
   </TimeSeries>
+</Publication_MarketDocument>
+"""
+
+SAMPLE_XML_15M = b"""<?xml version="1.0" encoding="UTF-8"?>
+<Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
   <TimeSeries>
     <Period>
       <timeInterval><start>2020-01-01T00:00Z</start></timeInterval>
       <resolution>PT15M</resolution>
-      <Point><position>1</position><price.amount>99.0</price.amount></Point>
+      <Point><position>1</position><price.amount>10.0</price.amount></Point>
+      <Point><position>2</position><price.amount>12.0</price.amount></Point>
+      <Point><position>3</position><price.amount>14.0</price.amount></Point>
+      <Point><position>4</position><price.amount>16.0</price.amount></Point>
     </Period>
   </TimeSeries>
 </Publication_MarketDocument>
@@ -70,9 +78,9 @@ def test_parse_day_ahead_prices_advances_hour_and_day():
     ]
 
 
-def test_parse_day_ahead_prices_skips_non_hourly_resolution():
-    rows = parse_day_ahead_prices(SAMPLE_XML)
-    assert len(rows) == 2
+def test_parse_day_ahead_prices_aggregates_15m_to_hourly():
+    rows = parse_day_ahead_prices(SAMPLE_XML_15M)
+    assert rows == [{"timestamp": "2020-01-01T00:00:00", "price_eur_mwh": 13.0}]
 
 
 ACTIVATION_PRICE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>

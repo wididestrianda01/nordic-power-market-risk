@@ -77,9 +77,13 @@ def _zip_xml(xml: bytes) -> bytes:
 
 PROCURED_VOLUME_ZIP = _zip_xml(PROCURED_VOLUME_XML)
 IMBALANCE_VOLUME_ZIP = _zip_xml(IMBALANCE_VOLUME_XML)
-ESETT_JSON = json.dumps([{"timestamp": "2020-01-01T00:00:00Z", "value": 1.0}]).encode()
-SVK_JSON = json.dumps({"result": {"records": [{"value": 1.0}]}}).encode()
-SMHI_JSON = json.dumps({"value": [{"date": 1577836800000, "value": "1.0"}]}).encode()
+ESETT_JSON = json.dumps(
+    [{"timestampUTC": "2020-01-01T00:00:00Z", "imblPurchasePrice": 1.0}]
+).encode()
+SVK_JSON = json.dumps(
+    {"result": {"records": [{"start_time_utc": "2020-01-01T00:00:00", "value": 1.0}]}}
+).encode()
+SMHI_CSV = b"Datum;Tid (UTC);Lufttemperatur;Kvalitet\n2020-01-01;00:00:00;1.0;G\n"
 
 
 @pytest.fixture
@@ -110,7 +114,7 @@ def test_ingest_all_writes_tables_and_manifest(config):
     responses.add(
         responses.GET,
         __import__("re").compile(rf"{SMHI_URL}/.*"),
-        body=SMHI_JSON,
+        body=SMHI_CSV,
         status=200,
     )
     settings = Settings(_env_file=None, entsoe_api_token="token")
@@ -121,7 +125,6 @@ def test_ingest_all_writes_tables_and_manifest(config):
     assert names == {
         "entsoe_day_ahead_price",
         "esett_imbalance_price",
-        "svk_day_ahead_price",
         "svk_fcr_capacity",
         "svk_afrr_mfrr_capacity",
         "smhi_observations",

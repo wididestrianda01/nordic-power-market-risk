@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, time
+
 from nordic_power_risk.config import PipelineConfig, Settings
 from nordic_power_risk.ingest import entsoe, esett, smhi, svk
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 from nordic_power_risk.ingest.manifest import ManifestEntry, make_entry, write_manifest
 
-# SMHI station representative of SE3 (Stockholm-Arlanda), air temperature (parameter 1).
+# SMHI station representative of SE3: Stockholm-Arlanda Flygplats (97400),
+# air temperature (parameter 1). 97270 is decommissioned (Strängnäs, 1980-1990).
 SMHI_PARAMETER = 1
-SMHI_STATION = 97270
+SMHI_STATION = 97400
+
+
+def _epoch_ms(day: date) -> int:
+    """Naive-UTC midnight for `day` as epoch milliseconds."""
+    return int(datetime.combine(day, time.min, tzinfo=UTC).timestamp() * 1000)
+
+
+def _in_window_date(timestamp: str, start: date, end: date) -> bool:
+    """True if an ISO timestamp's calendar date falls in [start, end] (inclusive)."""
+    return start.isoformat() <= timestamp[:10] <= end.isoformat()
 
 
 def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry]:
@@ -28,6 +41,7 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
             settings.entsoe_api_token, config.zone, start, end
         )
         rows = [row for raw in raw_chunks for row in entsoe.parse_day_ahead_prices(raw)]
+        rows = [r for r in rows if _in_window_date(r["timestamp"], start, end)]
         row_count = write_table(conn, "raw_entsoe_day_ahead_price", rows)
         entries.append(
             make_entry(
@@ -59,6 +73,7 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
         for series in svk.RESOURCE_IDS:
             raw = svk.fetch_resource(series)
             rows = svk.parse_resource(raw)
+            rows = [r for r in rows if _in_window_date(r["start_time_utc"], start, end)]
             row_count = write_table(conn, f"raw_svk_{series}", rows)
             entries.append(
                 make_entry(
@@ -74,6 +89,9 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
 
         raw = smhi.fetch_observations(SMHI_PARAMETER, SMHI_STATION)
         rows = smhi.parse_observations(raw)
+        lo_ms = _epoch_ms(start)
+        hi_ms = _epoch_ms(end) + 86_400_000  # end date inclusive
+        rows = [r for r in rows if lo_ms <= r["timestamp"] < hi_ms]
         row_count = write_table(conn, "raw_smhi_observations", rows)
         entries.append(
             make_entry(

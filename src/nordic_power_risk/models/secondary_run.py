@@ -337,18 +337,24 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
             if table in RESERVE_TARGETS:
                 reserve_forecasts.extend(_reserve_forecast_rows(table, test, forecasts["lgbm"]))
 
+            # Paired losses require one common valid mask across both rungs so the
+            # Diebold-Mariano test compares aligned rows (lgbm can drop NaN rows).
+            common_valid = test[value_column].notna()
+            for quantile_preds in forecasts.values():
+                common_valid &= quantile_preds[0.5].notna()
+
             for rung, quantile_preds in forecasts.items():
-                median = quantile_preds[0.5]
-                valid = median.notna() & test[value_column].notna()
-                if not valid.any():
+                if not common_valid.any():
                     continue
 
-                y_true = test.loc[valid, value_column].to_numpy()
-                preds = {q: series.loc[valid].to_numpy() for q, series in quantile_preds.items()}
+                y_true = test.loc[common_valid, value_column].to_numpy()
+                preds = {
+                    q: series.loc[common_valid].to_numpy() for q, series in quantile_preds.items()
+                }
 
                 row_losses[rung].append(mean_pinball_per_row(y_true, preds))
                 bucket = agg[rung]
-                n = int(valid.sum())
+                n = int(common_valid.sum())
                 bucket["n_obs"] = int(bucket["n_obs"]) + n
                 bucket["pinball_sum"] = (
                     float(bucket["pinball_sum"]) + mean_pinball_over_grid(y_true, preds) * n

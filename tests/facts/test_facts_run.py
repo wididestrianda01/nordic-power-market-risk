@@ -13,9 +13,6 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
     "raw_esett_imbalance_price": [
         {"timestamp": "2024-01-15T00:00:00", "imbalance_price_eur_mwh": 15.0},
     ],
-    "raw_svk_day_ahead_price": [
-        {"timestamp": "2024-01-15T00:00:00", "value": 10.0},
-    ],
     "raw_svk_fcr_capacity": [
         {
             "start_time_utc": "2024-01-15T00:00:00",
@@ -112,7 +109,6 @@ def test_build_all_facts_writes_every_fact_table(tmp_path: Path) -> None:
     tables = {result.table: result.row_count for result in results}
     assert tables == {
         "fact_day_ahead_price": 2,
-        "fact_svk_day_ahead_price": 1,
         "fact_svk_fcr_d_up": 1,
         "fact_svk_fcr_d_down": 1,
         "fact_svk_fcr_n": 1,

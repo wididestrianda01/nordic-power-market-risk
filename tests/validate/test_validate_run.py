@@ -16,10 +16,6 @@ VALID_ROWS: dict[str, list[dict[str, object]]] = {
         {"timestamp": "2020-01-05T00:00:00", "imbalance_price_eur_mwh": 1.0},
         {"timestamp": "2020-01-06T00:00:00", "imbalance_price_eur_mwh": 2.0},
     ],
-    "raw_svk_day_ahead_price": [
-        {"timestamp": "2020-01-05T00:00:00", "value": 1.0},
-        {"timestamp": "2020-01-06T00:00:00", "value": 2.0},
-    ],
     "raw_svk_fcr_capacity": [
         {"start_time_utc": "2020-01-05T00:00:00", "price": 1.0},
         {"start_time_utc": "2020-01-06T00:00:00", "price": 2.0},
@@ -83,7 +79,6 @@ def test_validate_all_fails_on_duplicate_key(tmp_path: Path) -> None:
     by_table = {result.table: result for result in results}
     assert by_table["raw_entsoe_day_ahead_price"].passed is False
     assert by_table["raw_entsoe_day_ahead_price"].failure_cases is not None
-    assert by_table["raw_svk_day_ahead_price"].passed is True
 
 
 def test_validate_all_rejects_unsupported_zone(tmp_path: Path) -> None:

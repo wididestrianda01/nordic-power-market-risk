@@ -1,7 +1,7 @@
 """Svenska kraftnat (SvK) Data Service / Mimer: CKAN datastore API.
 
-https://data.svk.se — historical day-ahead + FCR/aFRR/mFRR capacity series,
-CC BY 4.0. SvK stopped updating day-ahead 1 July 2026 (historical-only).
+https://data.svk.se — historical FCR/aFRR/mFRR capacity series, CC BY 4.0.
+Day-ahead energy price is sourced from ENTSO-E A44, not SvK.
 """
 
 from __future__ import annotations
@@ -15,8 +15,10 @@ BASE_URL = "https://data.svk.se/api/3/action/datastore_search"
 
 # CKAN resource_id per series (T03 research corrected: the two capacity
 # resource_ids were swapped — verified against live CKAN field/records).
+# Day-ahead energy price is sourced from ENTSO-E A44 only: SvK's day-ahead
+# series is discontinued (2026-07), covers only 2022-10 onward across 17
+# bidding zones, and is redundant with A44, so it is not ingested here.
 RESOURCE_IDS = {
-    "day_ahead_price": "0c56e30d-8fce-4c27-afc8-621c230ae34d",
     "fcr_capacity": "72ef5ec0-d0d7-4d22-95e9-4f22b3048af4",
     "afrr_mfrr_capacity": "6351d2cc-1657-43eb-b112-b8408c700529",
 }

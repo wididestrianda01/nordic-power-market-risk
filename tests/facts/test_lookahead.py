@@ -16,7 +16,6 @@ from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 
 FACT_TABLES = [
     "fact_day_ahead_price",
-    "fact_svk_day_ahead_price",
     "fact_svk_fcr_d_up",
     "fact_svk_fcr_d_down",
     "fact_svk_fcr_n",
@@ -47,9 +46,6 @@ def _seed_across_spine(config: PipelineConfig, event_times: pd.DatetimeIndex) ->
         )
         imbalance_rows = [{"timestamp": t, "imbalance_price_eur_mwh": 15.0} for t in iso_rows]
         write_table(conn, "raw_esett_imbalance_price", imbalance_rows)
-        write_table(
-            conn, "raw_svk_day_ahead_price", [{"timestamp": t, "value": 10.0} for t in iso_rows]
-        )
         write_table(
             conn,
             "raw_svk_fcr_capacity",
@@ -119,7 +115,6 @@ def test_imbalance_estimated_final_swap_resolves_at_t_plus_45(tmp_path: Path) ->
             conn, "raw_esett_imbalance_price", [{"timestamp": ts, "imbalance_price_eur_mwh": 15.0}]
         )
         write_table(conn, "raw_entsoe_day_ahead_price", [{"timestamp": ts, "price_eur_mwh": 10.0}])
-        write_table(conn, "raw_svk_day_ahead_price", [{"timestamp": ts, "value": 10.0}])
         write_table(
             conn,
             "raw_svk_fcr_capacity",
