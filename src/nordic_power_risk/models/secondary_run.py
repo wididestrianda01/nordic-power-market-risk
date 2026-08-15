@@ -145,9 +145,7 @@ def _reserve_forecast_rows(
 def _unique_imbalance_forecasts(
     rows: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    return list(
-        {(row["issue_time"], row["event_time"]): row for row in rows}.values()
-    )
+    return list({(row["issue_time"], row["event_time"]): row for row in rows}.values())
 
 
 def _unique_reserve_forecasts(
@@ -167,11 +165,15 @@ def _write_optimizer_forecasts(
     reserve_rows: list[dict[str, object]],
 ) -> None:
     write_table(
-        conn, "forecast_imbalance", _unique_imbalance_forecasts(imbalance_rows),
+        conn,
+        "forecast_imbalance",
+        _unique_imbalance_forecasts(imbalance_rows),
         columns=IMBALANCE_FORECAST_COLUMNS,
     )
     write_table(
-        conn, "forecast_reserve", _unique_reserve_forecasts(reserve_rows),
+        conn,
+        "forecast_reserve",
+        _unique_reserve_forecasts(reserve_rows),
         columns=RESERVE_FORECAST_COLUMNS,
     )
 
@@ -183,8 +185,7 @@ def _persist_optimizer_forecasts(
 ) -> None:
     conn = get_connection(config.duckdb_path)
     reserve_rows.extend(
-        row for row in _existing_reserves(conn)
-        if row.get("product") in {"AFRR", "MFRR"}
+        row for row in _existing_reserves(conn) if row.get("product") in {"AFRR", "MFRR"}
     )
     conn.execute("BEGIN TRANSACTION")
     try:
@@ -224,8 +225,7 @@ def _tertiary_rows(
         for index in frame.index[valid]
     ]
     errors = (
-        frame.loc[valid, "price"].astype(float)
-        - frame.loc[valid, "price_lag_168h"].astype(float)
+        frame.loc[valid, "price"].astype(float) - frame.loc[valid, "price_lag_168h"].astype(float)
     ).abs()
     return rows, TertiaryForecastResult(
         target=table,
@@ -237,8 +237,7 @@ def _tertiary_rows(
 
 def _existing_reserves(conn: object) -> list[dict[str, object]]:
     exists = conn.execute(
-        "SELECT count(*) FROM information_schema.tables "
-        "WHERE table_name = 'forecast_reserve'"
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_reserve'"
     ).fetchone()[0]
     if not exists:
         return []
@@ -248,19 +247,16 @@ def _existing_reserves(conn: object) -> list[dict[str, object]]:
 
 
 def _existing_non_tertiary_reserves(conn: object) -> list[dict[str, object]]:
-    return [
-        row for row in _existing_reserves(conn)
-        if row.get("product") not in {"AFRR", "MFRR"}
-    ]
+    return [row for row in _existing_reserves(conn) if row.get("product") not in {"AFRR", "MFRR"}]
 
 
-def _write_tertiary_forecasts(
-    conn: object, rows: list[dict[str, object]]
-) -> None:
+def _write_tertiary_forecasts(conn: object, rows: list[dict[str, object]]) -> None:
     conn.execute("BEGIN TRANSACTION")
     try:
         write_table(
-            conn, "forecast_reserve", _unique_reserve_forecasts(rows),
+            conn,
+            "forecast_reserve",
+            _unique_reserve_forecasts(rows),
             columns=RESERVE_FORECAST_COLUMNS,
         )
     except Exception:
@@ -315,8 +311,14 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
 
         row_losses: dict[str, list[np.ndarray]] = {"seasonal_naive": [], "lgbm": []}
         agg: dict[str, dict[str, float | int]] = {
-            rung: {"n_obs": 0, "pinball_sum": 0.0, "crps_sum": 0.0, "coverage_sum": 0.0,
-                   "winkler_sum": 0.0, "pit_sum": 0.0}
+            rung: {
+                "n_obs": 0,
+                "pinball_sum": 0.0,
+                "crps_sum": 0.0,
+                "coverage_sum": 0.0,
+                "winkler_sum": 0.0,
+                "pit_sum": 0.0,
+            }
             for rung in ("seasonal_naive", "lgbm")
         }
 
@@ -331,13 +333,9 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
                 "lgbm": lgbm_quantile_forecast(train, test, value_column),
             }
             if table == "feature_imbalance":
-                optimizer_forecasts.extend(
-                    _optimizer_forecast_rows(test, forecasts["lgbm"])
-                )
+                optimizer_forecasts.extend(_optimizer_forecast_rows(test, forecasts["lgbm"]))
             if table in RESERVE_TARGETS:
-                reserve_forecasts.extend(
-                    _reserve_forecast_rows(table, test, forecasts["lgbm"])
-                )
+                reserve_forecasts.extend(_reserve_forecast_rows(table, test, forecasts["lgbm"]))
 
             for rung, quantile_preds in forecasts.items():
                 median = quantile_preds[0.5]
@@ -352,28 +350,32 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
                 bucket = agg[rung]
                 n = int(valid.sum())
                 bucket["n_obs"] = int(bucket["n_obs"]) + n
-                bucket["pinball_sum"] = float(bucket["pinball_sum"]) + mean_pinball_over_grid(
-                    y_true, preds
-                ) * n
+                bucket["pinball_sum"] = (
+                    float(bucket["pinball_sum"]) + mean_pinball_over_grid(y_true, preds) * n
+                )
                 bucket["crps_sum"] = float(bucket["crps_sum"]) + crps_approx(y_true, preds) * n
-                bucket["coverage_sum"] = float(bucket["coverage_sum"]) + interval_coverage(
-                    y_true, preds[COVERAGE_LOWER_Q], preds[COVERAGE_UPPER_Q]
-                ) * n
-                bucket["winkler_sum"] = float(bucket["winkler_sum"]) + winkler_score(
-                    y_true, preds[COVERAGE_LOWER_Q], preds[COVERAGE_UPPER_Q], COVERAGE_ALPHA
-                ) * n
-                bucket["pit_sum"] = float(bucket["pit_sum"]) + float(
-                    np.mean(pit_values(y_true, preds))
-                ) * n
+                bucket["coverage_sum"] = (
+                    float(bucket["coverage_sum"])
+                    + interval_coverage(y_true, preds[COVERAGE_LOWER_Q], preds[COVERAGE_UPPER_Q])
+                    * n
+                )
+                bucket["winkler_sum"] = (
+                    float(bucket["winkler_sum"])
+                    + winkler_score(
+                        y_true, preds[COVERAGE_LOWER_Q], preds[COVERAGE_UPPER_Q], COVERAGE_ALPHA
+                    )
+                    * n
+                )
+                bucket["pit_sum"] = (
+                    float(bucket["pit_sum"]) + float(np.mean(pit_values(y_true, preds))) * n
+                )
 
         baseline_losses = (
             np.concatenate(row_losses["seasonal_naive"])
             if row_losses["seasonal_naive"]
             else np.array([])
         )
-        lgbm_losses = (
-            np.concatenate(row_losses["lgbm"]) if row_losses["lgbm"] else np.array([])
-        )
+        lgbm_losses = np.concatenate(row_losses["lgbm"]) if row_losses["lgbm"] else np.array([])
         dm_stat, dm_pvalue = (
             diebold_mariano_test(lgbm_losses, baseline_losses)
             if len(lgbm_losses) > 0 and len(baseline_losses) > 0

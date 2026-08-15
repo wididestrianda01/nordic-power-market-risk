@@ -41,6 +41,7 @@ class DispatchConfig(BaseModel):
             raise ValueError("initial_soc_mwh cannot exceed energy_capacity_mwh")
         return self
 
+
 class PipelineConfig(BaseModel):
     zone: str
     windows: dict[str, Window]

@@ -108,20 +108,18 @@ def models() -> None:
 
     tertiary_results = run_tertiary_forecast(config)
     for result in tertiary_results:
-        typer.echo(
-            f"{result.target}/{result.source} (n={result.n_obs}): "
-            f"mae={result.mae:.4f}"
-        )
+        typer.echo(f"{result.target}/{result.source} (n={result.n_obs}): mae={result.mae:.4f}")
 
 
 @app.command()
 def optimize() -> None:
-    """Optimize 07:00 balancing, 10:00 energy, 17:30 FCR, then T-60 imbalance."""
-    from nordic_power_risk.optimize.run import run_energy_dispatch
+    """Run integrated risk-gated balancing, energy, FCR, and imbalance backtest."""
+    from nordic_power_risk.risk.backtest import run_risk_backtest
 
     config = get_config()
     try:
-        result = run_energy_dispatch(config)
+        integrated = run_risk_backtest(config)
+        result = integrated.dispatch
     except (RuntimeError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
@@ -131,15 +129,23 @@ def optimize() -> None:
         f"{result.imbalance.table}: {result.imbalance.row_count} rows, "
         f"objective={result.imbalance.objective_eur:.2f} EUR; "
         f"{result.reserve.table}: {result.reserve.row_count} rows, "
-        f"capacity-value={result.reserve.capacity_value_eur:.2f} EUR "
-        f"-> {config.duckdb_path}"
+        f"capacity-value={result.reserve.capacity_value_eur:.2f} EUR; "
+        f"risk={integrated.gate_state}, decisions={integrated.decision_count}, "
+        f"blocked={integrated.blocked_decisions} -> {config.duckdb_path}"
     )
 
 
 @app.command()
 def risk() -> None:
-    """CVaR/drawdown risk checks (Phase 3)."""
-    _not_implemented("risk")
+    """Report the latest append-only CVaR/drawdown gate state."""
+    from nordic_power_risk.risk.run import read_risk_status
+
+    status = read_risk_status(get_config())
+    typer.echo(
+        f"risk: gate={status.gate_state}, records={status.record_count}, "
+        f"drawdown={status.drawdown_eur if status.drawdown_eur is not None else 'n/a'} EUR, "
+        f"fallback={status.fallback_reason or 'none'}"
+    )
 
 
 @app.command()

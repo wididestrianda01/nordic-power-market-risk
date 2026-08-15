@@ -161,4 +161,3 @@ class TestSelectBestRung:
         ]
 
         assert select_best_rung(results).rung == "naive"
-

@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -14,12 +14,11 @@ from nordic_power_risk.optimize import run as run_module
 from nordic_power_risk.optimize.dispatch import DispatchForecast, solve_energy_dispatch
 from nordic_power_risk.optimize.run import run_energy_dispatch
 
-
 runner = CliRunner()
 ISSUE_TIME = datetime(2025, 1, 1, 9)
 DELIVERY_TIME = datetime(2025, 1, 2)
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
-UTC = timezone.utc
+UTC = UTC
 
 
 def _config(
@@ -52,9 +51,7 @@ def _write_forecasts(config: PipelineConfig, rows: list[dict[str, object]]) -> N
         conn.close()
 
 
-def _write_imbalance_forecasts(
-    config: PipelineConfig, rows: list[dict[str, object]]
-) -> None:
+def _write_imbalance_forecasts(config: PipelineConfig, rows: list[dict[str, object]]) -> None:
     conn = get_connection(config.duckdb_path)
     try:
         write_table(conn, "forecast_imbalance", rows)
@@ -62,9 +59,7 @@ def _write_imbalance_forecasts(
         conn.close()
 
 
-def _write_reserve_forecasts(
-    config: PipelineConfig, rows: list[dict[str, object]]
-) -> None:
+def _write_reserve_forecasts(config: PipelineConfig, rows: list[dict[str, object]]) -> None:
     conn = get_connection(config.duckdb_path)
     try:
         write_table(conn, "forecast_reserve", rows)
@@ -88,13 +83,10 @@ def _fetch_dispatch(config: PipelineConfig) -> pd.DataFrame:
         conn.close()
 
 
-
 def _fetch_imbalance_dispatch(config: PipelineConfig) -> pd.DataFrame:
     conn = get_connection(config.duckdb_path)
     try:
-        return conn.execute(
-            "SELECT * FROM dispatch_imbalance ORDER BY delivery_time"
-        ).fetchdf()
+        return conn.execute("SELECT * FROM dispatch_imbalance ORDER BY delivery_time").fetchdf()
     finally:
         conn.close()
 
@@ -121,6 +113,7 @@ def _dispatch_table_names(config: PipelineConfig) -> set[str]:
         }
     finally:
         conn.close()
+
 
 def _forecast_row(
     issue_time: datetime,
@@ -237,11 +230,7 @@ def test_two_vintages_solve_calendar_windows_commit_once_and_handoff_soc(
     ]
     previous_soc = config.optimizer.initial_soc_mwh
     for row in persisted.itertuples(index=False):
-        expected_soc = (
-            previous_soc
-            + 0.9487 * row.charge_mw * 0.5
-            - row.discharge_mw * 0.5 / 0.9487
-        )
+        expected_soc = previous_soc + 0.9487 * row.charge_mw * 0.5 - row.discharge_mw * 0.5 / 0.9487
         assert row.soc_mwh == pytest.approx(expected_soc)
         previous_soc = row.soc_mwh
 
@@ -268,9 +257,7 @@ def test_stockholm_delivery_day_accepts_dst_hour_counts(
 
 
 def test_terminal_inventory_is_counted_once_at_final_committed_boundary(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    config = _config(
-        tmp_path, horizon_days=2, initial_soc_mwh=2.0, terminal_value_eur_mwh=30.0
-    )
+    config = _config(tmp_path, horizon_days=2, initial_soc_mwh=2.0, terminal_value_eur_mwh=30.0)
     issue_two = datetime(2025, 1, 2, 9)
     _write_forecasts(
         config,
@@ -403,7 +390,7 @@ def test_optimize_cli_runs_dispatch_and_reports_persisted_rows(tmp_path, monkeyp
         ("runtime", "solver unavailable"),
     ],
 )
-def test_optimize_cli_fails_concisely_for_invalid_or_runtime_input(
+def test_optimize_cli_fails_closed_for_missing_or_runtime_input(
     tmp_path, monkeypatch, scenario: str, message: str
 ) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path)
@@ -421,18 +408,23 @@ def test_optimize_cli_fails_concisely_for_invalid_or_runtime_input(
     elif scenario == "malformed":
         _write_forecasts(config, [{"event_time": DELIVERY_TIME, "realized_price": 1.0}])
     else:
+        from nordic_power_risk.risk import backtest as backtest_module
+
         _seed_derived_forecasts(config)
         monkeypatch.setattr(
-            run_module,
+            backtest_module,
             "run_energy_dispatch",
-            lambda config: (_ for _ in ()).throw(RuntimeError("solver unavailable")),
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("solver unavailable")),
         )
     monkeypatch.setattr(cli, "get_config", lambda: config)
 
     result = runner.invoke(app, ["optimize"])
+    risk = runner.invoke(app, ["risk"])
 
-    assert result.exit_code == 1
-    assert message in result.output
+    assert result.exit_code == 0
+    assert "risk=blocked" in result.output
+    assert risk.exit_code == 0
+    assert message in risk.output
 
 
 def test_rejects_duplicate_delivery_within_forecast_vintage(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -444,12 +436,8 @@ def test_rejects_duplicate_delivery_within_forecast_vintage(tmp_path) -> None:  
         run_energy_dispatch(config)
 
 
-def test_seven_day_vintage_excludes_day_eight_and_commits_day_one(
-    tmp_path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
-    config = _config(
-        tmp_path, horizon_days=7, initial_soc_mwh=0.0, terminal_value_eur_mwh=0.0
-    )
+def test_seven_day_vintage_excludes_day_eight_and_commits_day_one(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, horizon_days=7, initial_soc_mwh=0.0, terminal_value_eur_mwh=0.0)
     deliveries = [DELIVERY_TIME + timedelta(days=offset) for offset in range(8)]
     _write_forecasts(
         config,
@@ -513,36 +501,26 @@ def test_eligible_imbalance_forecasts_change_actual_setpoints_with_soc_handoff(
         expected_soc = (
             previous_soc
             + config.optimizer.one_way_efficiency * row.actual_charge_mw * row.duration_hours
-            - row.actual_discharge_mw
-            * row.duration_hours
-            / config.optimizer.one_way_efficiency
+            - row.actual_discharge_mw * row.duration_hours / config.optimizer.one_way_efficiency
         )
         assert row.imbalance_position_mw == pytest.approx(expected_position)
         assert row.forecast_value_eur == pytest.approx(
-            row.forecast_price_eur_mwh
-            * row.imbalance_position_mw
-            * row.duration_hours
+            row.forecast_price_eur_mwh * row.imbalance_position_mw * row.duration_hours
         )
         assert row.forecast_value_eur > 0.0
         assert row.objective_eur == pytest.approx(
-            row.forecast_value_eur
-            - row.degradation_cost_eur
-            + row.terminal_value_eur
+            row.forecast_value_eur - row.degradation_cost_eur + row.terminal_value_eur
         )
         assert 0.0 <= row.actual_charge_mw <= config.optimizer.power_limit_mw
         assert 0.0 <= row.actual_discharge_mw <= config.optimizer.power_limit_mw
-        assert row.actual_charge_mw * row.actual_discharge_mw == pytest.approx(
-            0.0, abs=1e-8
-        )
+        assert row.actual_charge_mw * row.actual_discharge_mw == pytest.approx(0.0, abs=1e-8)
         assert 0.0 <= row.soc_mwh <= config.optimizer.energy_capacity_mwh
         assert row.soc_mwh == pytest.approx(expected_soc, abs=1e-8)
         previous_soc = row.soc_mwh
 
 
 @pytest.mark.parametrize("scenario", ["missing", "stale", "late"])
-def test_unavailable_imbalance_forecast_keeps_day_ahead_schedule(
-    tmp_path, scenario: str
-) -> None:  # type: ignore[no-untyped-def]
+def test_unavailable_imbalance_forecast_keeps_day_ahead_schedule(tmp_path, scenario: str) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path, terminal_value_eur_mwh=0.0)
     _seed_derived_forecasts(config)
     if scenario != "missing":
@@ -567,9 +545,7 @@ def test_unavailable_imbalance_forecast_keeps_day_ahead_schedule(
     assert imbalance["forecast_issue_time"].isna().all()
     assert imbalance["forecast_price_eur_mwh"].isna().all()
     assert imbalance["forecast_value_eur"].eq(0.0).all()
-    assert imbalance["actual_charge_mw"].tolist() == pytest.approx(
-        energy["charge_mw"].tolist()
-    )
+    assert imbalance["actual_charge_mw"].tolist() == pytest.approx(energy["charge_mw"].tolist())
     assert imbalance["actual_discharge_mw"].tolist() == pytest.approx(
         energy["discharge_mw"].tolist()
     )
@@ -612,9 +588,7 @@ def test_late_forecast_and_realized_data_cannot_change_recourse(tmp_path) -> Non
 
 
 @pytest.mark.parametrize("preexisting", [False, True], ids=["empty", "replace"])
-def test_dispatch_tables_replace_atomically(
-    tmp_path, monkeypatch, preexisting: bool
-) -> None:  # type: ignore[no-untyped-def]
+def test_dispatch_tables_replace_atomically(tmp_path, monkeypatch, preexisting: bool) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path)
     old_energy = [{"marker": "old-energy"}]
     old_imbalance = [{"marker": "old-imbalance"}]
@@ -654,9 +628,7 @@ def test_dispatch_tables_replace_atomically(
     assert imbalance == [("old-imbalance",)]
 
 
-def test_stage_two_failure_persists_neither_table_and_cli_fails(
-    tmp_path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_stage_two_failure_keeps_base_atomicity_and_cli_fails_closed(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path)
     _seed_derived_forecasts(config)
 
@@ -671,9 +643,17 @@ def test_stage_two_failure_persists_neither_table_and_cli_fails(
 
     result = runner.invoke(app, ["optimize"])
 
-    assert result.exit_code == 1
-    assert "imbalance solver unavailable" in result.output
-    assert _dispatch_table_names(config) == set()
+    assert result.exit_code == 0
+    assert "risk=blocked" in result.output
+    assert _dispatch_table_names(config) == {
+        "dispatch_energy",
+        "dispatch_imbalance",
+        "dispatch_reserve",
+    }
+    assert _fetch_dispatch(config)["charge_mw"].eq(0.0).all()
+    assert _fetch_dispatch(config)["discharge_mw"].eq(0.0).all()
+    assert _fetch_imbalance_dispatch(config)["actual_charge_mw"].eq(0.0).all()
+    assert _fetch_imbalance_dispatch(config)["actual_discharge_mw"].eq(0.0).all()
 
 
 @pytest.mark.parametrize(
@@ -769,9 +749,7 @@ def test_nonzero_day_ahead_commitment_is_fixed_during_recourse(tmp_path) -> None
     imbalance = _fetch_imbalance_dispatch(config)
 
     pd.testing.assert_frame_equal(baseline_energy, energy)
-    assert imbalance["day_ahead_charge_mw"].tolist() == pytest.approx(
-        energy["charge_mw"].tolist()
-    )
+    assert imbalance["day_ahead_charge_mw"].tolist() == pytest.approx(energy["charge_mw"].tolist())
     assert imbalance["day_ahead_discharge_mw"].tolist() == pytest.approx(
         energy["discharge_mw"].tolist()
     )
@@ -779,9 +757,7 @@ def test_nonzero_day_ahead_commitment_is_fixed_during_recourse(tmp_path) -> None
     assert imbalance.iloc[0]["forecast_issue_time"] == cutoff
     assert imbalance.iloc[0]["decision_time"] == cutoff
     assert imbalance.iloc[0]["day_ahead_issue_time"] != cutoff
-    assert imbalance.iloc[0]["actual_charge_mw"] != pytest.approx(
-        energy.iloc[0]["charge_mw"]
-    )
+    assert imbalance.iloc[0]["actual_charge_mw"] != pytest.approx(energy.iloc[0]["charge_mw"])
 
 
 def test_degradation_threshold_changes_persisted_recourse_decision(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -830,7 +806,9 @@ def _reserve_row(
             delivery_time.replace(tzinfo=UTC).astimezone(STOCKHOLM).date() - timedelta(days=1),
             time(17, 30),
             tzinfo=STOCKHOLM,
-        ).astimezone(UTC).replace(tzinfo=None)
+        )
+        .astimezone(UTC)
+        .replace(tzinfo=None)
         + issue_offset
     )
     return {
@@ -886,24 +864,14 @@ def test_run_persists_normalized_conditional_reserve_decisions(tmp_path) -> None
         "capacity_value_eur",
         "solver_status",
     ]
-    assert rows["conditional_acceptance"].tolist() == (
-        rows["capacity_mw"] > 1e-8
-    ).tolist()
+    assert rows["conditional_acceptance"].tolist() == (rows["capacity_mw"] > 1e-8).tolist()
     assert (rows["capacity_mw"] > 1e-8).sum() == 1
     assert rows["capacity_value_eur"].tolist() == pytest.approx(
-        (
-            rows["forecast_value_eur_mw_h"]
-            * rows["capacity_mw"]
-            * rows["duration_hours"]
-        ).tolist()
+        (rows["forecast_value_eur_mw_h"] * rows["capacity_mw"] * rows["duration_hours"]).tolist()
     )
-    assert rows["capacity_value_eur"].sum() == pytest.approx(
-        result.reserve.capacity_value_eur
-    )
+    assert rows["capacity_value_eur"].sum() == pytest.approx(result.reserve.capacity_value_eur)
     assert imbalance["reserved_up_mw"] == pytest.approx(rows["reserved_up_mw"].sum())
-    assert imbalance["reserved_down_mw"] == pytest.approx(
-        rows["reserved_down_mw"].sum()
-    )
+    assert imbalance["reserved_down_mw"] == pytest.approx(rows["reserved_down_mw"].sum())
     assert imbalance["actual_discharge_mw"] <= 1.0 - imbalance["reserved_up_mw"] + 1e-8
     assert imbalance["actual_charge_mw"] <= 1.0 - imbalance["reserved_down_mw"] + 1e-8
     assert imbalance["minimum_soc_mwh"] - 1e-8 <= imbalance["soc_mwh"]
@@ -953,9 +921,14 @@ def test_missing_reserve_forecasts_fall_back_flat_with_schema(tmp_path) -> None:
         ([_reserve_row_with("delivery_time", None)], "delivery_time must be a valid timestamp"),
     ],
     ids=[
-        "missing-columns", "nonnumeric-price", "unsupported-product",
-        "unsupported-direction", "unsupported-source", "duplicate-exact-key",
-        "invalid-issue-time", "null-delivery-time",
+        "missing-columns",
+        "nonnumeric-price",
+        "unsupported-product",
+        "unsupported-direction",
+        "unsupported-source",
+        "duplicate-exact-key",
+        "invalid-issue-time",
+        "null-delivery-time",
     ],
 )
 def test_malformed_reserve_forecasts_fail_before_persistence(
@@ -1002,7 +975,9 @@ def test_three_dispatch_tables_replace_atomically(tmp_path, monkeypatch) -> None
         conn.close()
 
 
-def test_optimize_cli_reports_nonzero_reserve_value(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_optimize_cli_zeros_reserve_value_when_risk_inputs_are_missing(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path, terminal_value_eur_mwh=0.0)
     _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
     _write_reserve_forecasts(config, [_reserve_row(DELIVERY_TIME, price=100.0)])
@@ -1012,15 +987,14 @@ def test_optimize_cli_reports_nonzero_reserve_value(tmp_path, monkeypatch) -> No
 
     assert result.exit_code == 0
     assert "dispatch_reserve: 1 rows" in result.output
-    assert "capacity-value=100.00 EUR" in result.output
+    assert "capacity-value=0.00 EUR" in result.output
+    assert "risk=blocked" in result.output
 
 
 def test_optimize_cli_fails_for_invalid_reserve_source(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path, terminal_value_eur_mwh=0.0)
     _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
-    _write_reserve_forecasts(
-        config, [_reserve_row_with("forecast_source", "seasonal_naive")]
-    )
+    _write_reserve_forecasts(config, [_reserve_row_with("forecast_source", "seasonal_naive")])
     monkeypatch.setattr(cli, "get_config", lambda: config)
 
     result = runner.invoke(app, ["optimize"])
@@ -1042,8 +1016,7 @@ def _balancing_row(
 ) -> dict[str, object]:
     issue_time = (
         datetime.combine(
-            delivery_time.replace(tzinfo=UTC).astimezone(STOCKHOLM).date()
-            - timedelta(days=1),
+            delivery_time.replace(tzinfo=UTC).astimezone(STOCKHOLM).date() - timedelta(days=1),
             time(7),
             tzinfo=STOCKHOLM,
         )
@@ -1065,19 +1038,17 @@ def _balancing_row(
 
 
 def test_early_balancing_award_constrains_energy_fcr_and_imbalance(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    config = _config(
-        tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
-    )
-    _write_forecasts(
-        config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 1_000.0)]
-    )
+    config = _config(tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 1_000.0)])
     _write_imbalance_forecasts(
         config,
-        [{
-            "issue_time": DELIVERY_TIME - timedelta(minutes=60),
-            "event_time": DELIVERY_TIME,
-            "q0_5": 1_000.0,
-        }],
+        [
+            {
+                "issue_time": DELIVERY_TIME - timedelta(minutes=60),
+                "event_time": DELIVERY_TIME,
+                "q0_5": 1_000.0,
+            }
+        ],
     )
     _write_reserve_forecasts(
         config,
@@ -1105,12 +1076,8 @@ def test_early_balancing_award_constrains_energy_fcr_and_imbalance(tmp_path) -> 
 def test_balancing_award_does_not_use_day_ahead_or_later_prices(tmp_path) -> None:  # type: ignore[no-untyped-def]
     capacities = []
     for name, day_ahead, fcr in (("low", -1_000.0, -1_000.0), ("high", 1_000.0, 1_000_000.0)):
-        config = _config(
-            tmp_path / name, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
-        )
-        _write_forecasts(
-            config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, day_ahead)]
-        )
+        config = _config(tmp_path / name, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
+        _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, day_ahead)])
         _write_reserve_forecasts(
             config,
             [
@@ -1150,10 +1117,10 @@ def test_invalid_balancing_inputs_fail_before_atomic_persistence(
     assert _dispatch_table_names(config) == set()
 
 
-def test_optimize_cli_reports_balancing_capacity_value(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    config = _config(
-        tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
-    )
+def test_optimize_cli_zeros_balancing_value_when_risk_inputs_are_missing(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
     _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
     _write_reserve_forecasts(config, [_balancing_row(DELIVERY_TIME, price=75.0)])
     monkeypatch.setattr(cli, "get_config", lambda: config)
@@ -1162,7 +1129,8 @@ def test_optimize_cli_reports_balancing_capacity_value(tmp_path, monkeypatch) ->
 
     assert result.exit_code == 0
     assert "dispatch_reserve: 1 rows" in result.output
-    assert "capacity-value=75.00 EUR" in result.output
+    assert "capacity-value=0.00 EUR" in result.output
+    assert "risk=blocked" in result.output
 
 
 def test_next_balancing_gate_uses_soc_carried_from_prior_energy_decision(

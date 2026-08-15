@@ -6,12 +6,12 @@ import pandas as pd
 import pytest
 
 from nordic_power_risk.config import PipelineConfig, Window
-from nordic_power_risk.facts.run import build_all_facts
 from nordic_power_risk.facts.rules import imbalance_forecast_issue_time
+from nordic_power_risk.facts.run import build_all_facts
 from nordic_power_risk.features.run import build_secondary_features
+from nordic_power_risk.features.split import Fold
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 from nordic_power_risk.models import secondary_run as secondary_module
-from nordic_power_risk.features.split import Fold
 from nordic_power_risk.models.secondary_run import SECONDARY_TARGETS, run_secondary_benchmark
 
 
@@ -119,13 +119,9 @@ def test_run_secondary_benchmark_reports_seasonal_naive_and_lgbm_with_dm_test(
     try:
         table_names = {
             row[0]
-            for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables"
-            ).fetchall()
+            for row in conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
         }
-        forecasts = conn.execute(
-            "SELECT * FROM forecast_imbalance ORDER BY event_time"
-        ).fetchdf()
+        forecasts = conn.execute("SELECT * FROM forecast_imbalance ORDER BY event_time").fetchdf()
     finally:
         conn.close()
     assert "forecast_day_ahead" not in table_names
@@ -186,9 +182,7 @@ def test_optimizer_forecast_persistence_keeps_exact_lgbm_quantiles_and_unique_ke
         "q0_9",
     ]
     assert len(forecasts) == 1
-    assert forecasts.iloc[0][["q0_1", "q0_5", "q0_9"]].tolist() == pytest.approx(
-        [11.1, 55.5, 99.9]
-    )
+    assert forecasts.iloc[0][["q0_1", "q0_5", "q0_9"]].tolist() == pytest.approx([11.1, 55.5, 99.9])
 
 
 def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
@@ -228,8 +222,7 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
 
     def sentinel(test: pd.DataFrame, base: float) -> dict[float, pd.Series]:
         return {
-            quantile: pd.Series(base + quantile, index=test.index)
-            for quantile in (0.1, 0.5, 0.9)
+            quantile: pd.Series(base + quantile, index=test.index) for quantile in (0.1, 0.5, 0.9)
         }
 
     monkeypatch.setattr(secondary_module, "rolling_origin_folds", lambda *_: [fold])
@@ -246,9 +239,7 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
     )
     monkeypatch.setattr(secondary_module.mlflow, "set_tracking_uri", lambda *_: None)
     monkeypatch.setattr(secondary_module.mlflow, "set_experiment", lambda *_: None)
-    monkeypatch.setattr(
-        secondary_module.mlflow, "start_run", lambda **_: nullcontext()
-    )
+    monkeypatch.setattr(secondary_module.mlflow, "start_run", lambda **_: nullcontext())
     monkeypatch.setattr(secondary_module.mlflow, "log_metrics", lambda *_: None)
 
     secondary_module.run_secondary_benchmark(config)
@@ -261,9 +252,7 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
     finally:
         conn.close()
 
-    assert forecast[["q0_1", "q0_5", "q0_9"]].tolist() == pytest.approx(
-        [20.1, 20.5, 20.9]
-    )
+    assert forecast[["q0_1", "q0_5", "q0_9"]].tolist() == pytest.approx([20.1, 20.5, 20.9])
     assert forecast["q0_5"] != pytest.approx(10.5)
     assert list(reserves.columns) == [
         "product",
@@ -322,12 +311,15 @@ def test_optimizer_forecast_tables_replace_atomically(
     conn = get_connection(config.duckdb_path)
     try:
         names = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'forecast_%'"
             ).fetchall()
         }
         if preexisting:
-            assert conn.execute("SELECT * FROM forecast_imbalance").fetchall() == [("old-imbalance",)]
+            assert conn.execute("SELECT * FROM forecast_imbalance").fetchall() == [
+                ("old-imbalance",)
+            ]
             assert conn.execute("SELECT * FROM forecast_reserve").fetchall() == [("old-reserve",)]
         else:
             assert names == set()
@@ -335,16 +327,15 @@ def test_optimizer_forecast_tables_replace_atomically(
         conn.close()
 
 
-
-def _tertiary_feature_rows(
-    event_time: datetime, point: float
-) -> list[dict[str, object]]:
-    return [{
-        "event_time": event_time,
-        "issue_time": event_time,
-        "price": point + 999.0,
-        "price_lag_168h": point,
-    }]
+def _tertiary_feature_rows(event_time: datetime, point: float) -> list[dict[str, object]]:
+    return [
+        {
+            "event_time": event_time,
+            "issue_time": event_time,
+            "price": point + 999.0,
+            "price_lag_168h": point,
+        }
+    ]
 
 
 def test_tertiary_forecasts_persist_point_only_product_mapping_and_exact_gate(
@@ -369,9 +360,7 @@ def test_tertiary_forecasts_persist_point_only_product_mapping_and_exact_gate(
 
     conn = get_connection(config.duckdb_path)
     try:
-        rows = conn.execute(
-            "SELECT * FROM forecast_reserve ORDER BY product, direction"
-        ).fetchdf()
+        rows = conn.execute("SELECT * FROM forecast_reserve ORDER BY product, direction").fetchdf()
     finally:
         conn.close()
     assert {(item.target, item.source) for item in results} == {
@@ -388,10 +377,7 @@ def test_tertiary_forecasts_persist_point_only_product_mapping_and_exact_gate(
             rows["q0_5"],
             strict=True,
         )
-    ) == {
-        (product, direction): point
-        for product, direction, point in expected.values()
-    }
+    ) == {(product, direction): point for product, direction, point in expected.values()}
     assert rows["issue_time"].eq(datetime(2025, 6, 30, 5)).all()
 
 
@@ -416,23 +402,24 @@ def test_tertiary_forecast_rejects_duplicate_delivery_before_persistence(
     conn = get_connection(config.duckdb_path)
     try:
         names = conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_name = 'forecast_reserve'"
+            "SELECT table_name FROM information_schema.tables WHERE table_name = 'forecast_reserve'"
         ).fetchall()
     finally:
         conn.close()
     assert names == []
 
 
-def test_tertiary_forecast_replace_rolls_back_atomically(
-    tmp_path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_tertiary_forecast_replace_rolls_back_atomically(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     config = _make_config(tmp_path, date(2025, 1, 1), date(2025, 2, 1))
     event_time = datetime(2025, 1, 15)
     old = {
-        "product": "FCR_D", "direction": "up",
+        "product": "FCR_D",
+        "direction": "up",
         "issue_time": datetime(2025, 1, 14, 16, 30),
-        "delivery_time": event_time, "q0_1": 1.0, "q0_5": 2.0, "q0_9": 3.0,
+        "delivery_time": event_time,
+        "q0_1": 1.0,
+        "q0_5": 2.0,
+        "q0_9": 3.0,
         "forecast_source": "lgbm",
     }
     conn = get_connection(config.duckdb_path)
@@ -454,9 +441,7 @@ def test_tertiary_forecast_replace_rolls_back_atomically(
 
     conn = get_connection(config.duckdb_path)
     try:
-        assert conn.execute("SELECT * FROM forecast_reserve").fetchall() == [
-            tuple(old.values())
-        ]
+        assert conn.execute("SELECT * FROM forecast_reserve").fetchall() == [tuple(old.values())]
     finally:
         conn.close()
 
@@ -467,15 +452,23 @@ def test_secondary_forecast_refresh_preserves_normalized_tertiary_rows(
     config = _make_config(tmp_path, date(2025, 1, 1), date(2025, 2, 1))
     event_time = datetime(2025, 1, 15)
     tertiary = {
-        "product": "AFRR", "direction": "up",
+        "product": "AFRR",
+        "direction": "up",
         "issue_time": datetime(2025, 1, 14, 6),
-        "delivery_time": event_time, "q0_1": None, "q0_5": 5.0, "q0_9": None,
+        "delivery_time": event_time,
+        "q0_1": None,
+        "q0_5": 5.0,
+        "q0_9": None,
         "forecast_source": "seasonal_naive",
     }
     fcr = {
-        "product": "FCR_D", "direction": "up",
+        "product": "FCR_D",
+        "direction": "up",
         "issue_time": datetime(2025, 1, 14, 16, 30),
-        "delivery_time": event_time, "q0_1": 1.0, "q0_5": 2.0, "q0_9": 3.0,
+        "delivery_time": event_time,
+        "q0_1": 1.0,
+        "q0_5": 2.0,
+        "q0_9": 3.0,
         "forecast_source": "lgbm",
     }
     conn = get_connection(config.duckdb_path)

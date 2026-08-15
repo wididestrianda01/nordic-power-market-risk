@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, timedelta
 from itertools import groupby
 from math import isfinite
 from typing import Any
@@ -43,6 +44,10 @@ RESERVE_DISPATCH_COLUMNS = {
     "capacity_value_eur": "DOUBLE",
     "solver_status": "VARCHAR",
 }
+
+
+class MissingForecastInputError(ValueError):
+    """Required promoted day-ahead forecast input is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,7 @@ def _as_datetime(value: object) -> datetime:
         return value
     return datetime.fromisoformat(str(value))
 
+
 def _validate_unique_vintage_deliveries(forecasts: list[DispatchForecast]) -> None:
     seen: set[tuple[datetime, datetime]] = set()
     for forecast in forecasts:
@@ -106,7 +112,6 @@ def _validate_unique_vintage_deliveries(forecasts: list[DispatchForecast]) -> No
         if key in seen:
             raise ValueError("forecast vintage contains duplicate delivery_time")
         seen.add(key)
-
 
 
 def _load_promoted_forecasts(
@@ -120,9 +125,9 @@ def _load_promoted_forecasts(
     finally:
         conn.close()
     if not rows:
-        raise ValueError("forecast_day_ahead is empty")
+        raise MissingForecastInputError("forecast_day_ahead is empty")
     if "q0_5" not in columns:
-        raise ValueError("forecast_day_ahead is missing promoted median q0_5")
+        raise MissingForecastInputError("forecast_day_ahead is missing promoted median q0_5")
     explicit_issue_time = "issue_time" in columns
     forecasts = [_to_forecast(row) for row in rows]
     _validate_unique_vintage_deliveries(forecasts)
@@ -150,17 +155,14 @@ def _read_imbalance_forecast_rows(config: PipelineConfig) -> list[dict[str, Any]
     conn = get_connection(config.duckdb_path)
     try:
         exists = conn.execute(
-            "SELECT count(*) FROM information_schema.tables "
-            "WHERE table_name = 'forecast_imbalance'"
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_imbalance'"
         ).fetchone()[0]
         if not exists:
             return []
         cursor = conn.execute("SELECT * FROM forecast_imbalance")
         columns = [column[0] for column in cursor.description]
         _validate_imbalance_forecast_columns(columns)
-        return [
-            dict(zip(columns, values, strict=True)) for values in cursor.fetchall()
-        ]
+        return [dict(zip(columns, values, strict=True)) for values in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -189,8 +191,14 @@ def _load_imbalance_forecasts(
 
 def _validate_reserve_forecast_columns(columns: list[str]) -> None:
     required = {
-        "product", "direction", "issue_time", "delivery_time",
-        "q0_1", "q0_5", "q0_9", "forecast_source",
+        "product",
+        "direction",
+        "issue_time",
+        "delivery_time",
+        "q0_1",
+        "q0_5",
+        "q0_9",
+        "forecast_source",
     }
     if not required.issubset(columns):
         raise ValueError("forecast_reserve is missing required columns")
@@ -200,8 +208,7 @@ def _read_reserve_forecast_rows(config: PipelineConfig) -> list[dict[str, Any]]:
     conn = get_connection(config.duckdb_path)
     try:
         exists = conn.execute(
-            "SELECT count(*) FROM information_schema.tables "
-            "WHERE table_name = 'forecast_reserve'"
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_reserve'"
         ).fetchone()[0]
         if not exists:
             return []
@@ -231,9 +238,7 @@ def _reserve_datetime(row: dict[str, Any], key: str) -> datetime:
     try:
         return _as_datetime(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"forecast_reserve {key} must be a valid timestamp"
-        ) from exc
+        raise ValueError(f"forecast_reserve {key} must be a valid timestamp") from exc
 
 
 def _to_reserve_forecast(row: dict[str, Any], price: float) -> ReserveForecast:
@@ -241,16 +246,16 @@ def _to_reserve_forecast(row: dict[str, Any], price: float) -> ReserveForecast:
     if product == "FFR":
         raise ValueError("unsupported balancing reserve product or direction")
     expected_source = (
-        "seasonal_naive" if product in {"AFRR", "MFRR"}
-        else "lgbm" if product in {"FCR_N", "FCR_D"}
+        "seasonal_naive"
+        if product in {"AFRR", "MFRR"}
+        else "lgbm"
+        if product in {"FCR_N", "FCR_D"}
         else None
     )
     if expected_source is None:
         raise ValueError("unsupported FCR or balancing reserve product or direction")
     if row["forecast_source"] != expected_source:
-        raise ValueError(
-            f"forecast_reserve {product} forecast_source must be {expected_source}"
-        )
+        raise ValueError(f"forecast_reserve {product} forecast_source must be {expected_source}")
     return ReserveForecast(
         product=product,
         direction=str(row["direction"]),
@@ -310,6 +315,67 @@ def _commit_first_day(result: DispatchResult) -> list[_Commitment]:
     ]
 
 
+def _flat_commitments(commitments: list[_Commitment], initial_soc_mwh: float) -> list[_Commitment]:
+    return [
+        _Commitment(
+            DispatchInterval(
+                issue_time=item.interval.issue_time,
+                delivery_time=item.interval.delivery_time,
+                duration_hours=item.interval.duration_hours,
+                charge_mw=0.0,
+                discharge_mw=0.0,
+                soc_mwh=initial_soc_mwh,
+                energy_revenue_eur=0.0,
+                degradation_cost_eur=0.0,
+                terminal_value_eur=0.0,
+                objective_eur=0.0,
+            ),
+            "risk_blocked",
+        )
+        for item in commitments
+    ]
+
+
+def _flat_reserve_forecast(forecast: ReserveForecast, config: DispatchConfig) -> ReserveInterval:
+    return ReserveInterval(
+        product=forecast.product,
+        direction=forecast.direction,
+        issue_time=forecast.issue_time,
+        delivery_time=forecast.delivery_time,
+        duration_hours=forecast.duration_hours,
+        forecast_value_eur_mw_h=forecast.forecast_value_eur_mw_h,
+        capacity_mw=0.0,
+        reserved_up_mw=0.0,
+        reserved_down_mw=0.0,
+        minimum_soc_mwh=0.0,
+        maximum_soc_mwh=config.energy_capacity_mwh,
+        conditional_acceptance=False,
+        capacity_value_eur=0.0,
+        solver_status="risk_blocked",
+    )
+
+
+def _zero_blocked_reserve(
+    intervals: list[ReserveInterval], blocked_days: set[date], config: DispatchConfig
+) -> list[ReserveInterval]:
+    return [
+        replace(
+            interval,
+            capacity_mw=0.0,
+            reserved_up_mw=0.0,
+            reserved_down_mw=0.0,
+            minimum_soc_mwh=0.0,
+            maximum_soc_mwh=config.energy_capacity_mwh,
+            conditional_acceptance=False,
+            capacity_value_eur=0.0,
+            solver_status="risk_blocked",
+        )
+        if _delivery_day(interval.delivery_time) in blocked_days
+        else interval
+        for interval in intervals
+    ]
+
+
 def _rolling_events(
     energy: list[DispatchForecast], balancing: list[ReserveForecast]
 ) -> list[tuple[datetime, str, list[Any]]]:
@@ -348,8 +414,7 @@ def _balancing_forecasts(
     forecasts: dict[datetime, list[ReserveForecast]],
 ) -> list[ReserveForecast]:
     return [
-        item for rows in forecasts.values() for item in rows
-        if item.product in {"AFRR", "MFRR"}
+        item for rows in forecasts.values() for item in rows if item.product in {"AFRR", "MFRR"}
     ]
 
 
@@ -383,8 +448,9 @@ def _reserve_headroom_objects(
 ) -> dict[datetime, ReserveHeadroom]:
     return {
         delivery_time: ReserveHeadroom(up, down, minimum_soc, maximum_soc)
-        for delivery_time, (up, down, minimum_soc, maximum_soc)
-        in _reserve_headroom(intervals, config).items()
+        for delivery_time, (up, down, minimum_soc, maximum_soc) in _reserve_headroom(
+            intervals, config
+        ).items()
     }
 
 
@@ -413,11 +479,17 @@ def _recourse_input(
         interval.delivery_time, (0.0, 0.0, 0.0, config.energy_capacity_mwh)
     )
     return ImbalanceDispatchInput(
-        delivery_time=interval.delivery_time, duration_hours=interval.duration_hours,
-        day_ahead_charge_mw=interval.charge_mw, day_ahead_discharge_mw=interval.discharge_mw,
+        delivery_time=interval.delivery_time,
+        duration_hours=interval.duration_hours,
+        day_ahead_charge_mw=interval.charge_mw,
+        day_ahead_discharge_mw=interval.discharge_mw,
         forecast_issue_time=forecast.issue_time if is_decision_interval and forecast else None,
-        forecast_price_eur_mwh=forecast.price_eur_mwh if is_decision_interval and forecast else None,
-        reserved_up_mw=up, reserved_down_mw=down, minimum_soc_mwh=minimum_soc,
+        forecast_price_eur_mwh=forecast.price_eur_mwh
+        if is_decision_interval and forecast
+        else None,
+        reserved_up_mw=up,
+        reserved_down_mw=down,
+        minimum_soc_mwh=minimum_soc,
         maximum_soc_mwh=maximum_soc,
     )
 
@@ -456,9 +528,7 @@ def _solve_imbalance_windows(
     return decisions
 
 
-def _interval_row(
-    commitment: _Commitment, terminal_value_eur: float
-) -> dict[str, object]:
+def _interval_row(commitment: _Commitment, terminal_value_eur: float) -> dict[str, object]:
     interval = commitment.interval
     objective = interval.energy_revenue_eur - interval.degradation_cost_eur + terminal_value_eur
     return {
@@ -507,9 +577,7 @@ def _imbalance_rows(
 ) -> list[dict[str, object]]:
     final_value = config.terminal_value_eur_mwh * commitments[-1].interval.soc_mwh
     return [
-        _imbalance_interval_row(
-            commitment, final_value if index == len(commitments) - 1 else 0.0
-        )
+        _imbalance_interval_row(commitment, final_value if index == len(commitments) - 1 else 0.0)
         for index, commitment in enumerate(commitments)
     ]
 
@@ -541,9 +609,7 @@ def _persist_rows(
     conn = get_connection(config.duckdb_path)
     conn.execute("BEGIN TRANSACTION")
     try:
-        counts = _write_dispatch_tables(
-            conn, energy_rows, imbalance_rows, reserve_rows
-        )
+        counts = _write_dispatch_tables(conn, energy_rows, imbalance_rows, reserve_rows)
     except Exception:
         conn.execute("ROLLBACK")
         raise
@@ -554,9 +620,7 @@ def _persist_rows(
         conn.close()
 
 
-def _imbalance_result(
-    rows: list[dict[str, object]], row_count: int
-) -> ImbalanceRunResult:
+def _imbalance_result(rows: list[dict[str, object]], row_count: int) -> ImbalanceRunResult:
     forecast_value = sum(float(row["forecast_value_eur"]) for row in rows)
     degradation = sum(float(row["degradation_cost_eur"]) for row in rows)
     terminal = sum(float(row["terminal_value_eur"]) for row in rows)
@@ -570,9 +634,7 @@ def _imbalance_result(
     )
 
 
-def _reserve_result(
-    rows: list[dict[str, object]], row_count: int
-) -> ReserveRunResult:
+def _reserve_result(rows: list[dict[str, object]], row_count: int) -> ReserveRunResult:
     return ReserveRunResult(
         table="dispatch_reserve",
         row_count=row_count,
@@ -602,31 +664,27 @@ def _result(
 
 
 def _causal_dispatch_stages(
-    config: PipelineConfig, forecasts: list[DispatchForecast]
+    config: PipelineConfig,
+    forecasts: list[DispatchForecast],
+    *,
+    energy_gate: Callable[[tuple[DispatchInterval, ...]], bool] | None = None,
 ) -> tuple[list[_Commitment], list[ReserveInterval], list[_ImbalanceCommitment]]:
     reserve_forecasts = _load_reserve_forecasts(config)
     balancing: list[ReserveInterval] = []
     commitments: list[_Commitment] = []
     committed_times: set[datetime] = set()
+    blocked_days: set[date] = set()
     initial_soc = config.optimizer.initial_soc_mwh
-    for _, stage, group in _rolling_events(
-        forecasts, _balancing_forecasts(reserve_forecasts)
-    ):
+    for _, stage, group in _rolling_events(forecasts, _balancing_forecasts(reserve_forecasts)):
         if stage == "balancing":
-            gate_config = config.optimizer.model_copy(
-                update={"initial_soc_mwh": initial_soc}
-            )
-            balancing.extend(
-                solve_balancing_reserve_dispatch(group, gate_config).intervals
-            )
+            gate_config = config.optimizer.model_copy(update={"initial_soc_mwh": initial_soc})
+            balancing.extend(solve_balancing_reserve_dispatch(group, gate_config).intervals)
             continue
         candidates = [item for item in group if item.delivery_time not in committed_times]
         if not candidates:
             continue
         window = _calendar_window(candidates, config.optimizer)
-        window_config = config.optimizer.model_copy(
-            update={"initial_soc_mwh": initial_soc}
-        )
+        window_config = config.optimizer.model_copy(update={"initial_soc_mwh": initial_soc})
         headroom = _reserve_headroom_objects(balancing, config.optimizer)
         result = (
             solve_energy_dispatch(window, window_config, reserve_headroom=headroom)
@@ -634,30 +692,58 @@ def _causal_dispatch_stages(
             else solve_energy_dispatch(window, window_config)
         )
         new_commitments = _commit_first_day(result)
+        if energy_gate is not None and energy_gate(
+            tuple(item.interval for item in new_commitments)
+        ):
+            blocked_day = _delivery_day(new_commitments[0].interval.delivery_time)
+            blocked_days.add(blocked_day)
+            new_commitments = _flat_commitments(new_commitments, initial_soc)
+            balancing = _zero_blocked_reserve(balancing, blocked_days, config.optimizer)
         commitments.extend(new_commitments)
         committed_times.update(item.interval.delivery_time for item in new_commitments)
         initial_soc = new_commitments[-1].interval.soc_mwh
 
     balancing_headroom = _reserve_headroom_objects(balancing, config.optimizer)
-    fcr = _solve_reserve_windows(
-        commitments, _fcr_forecasts(reserve_forecasts), config.optimizer, balancing_headroom
+    fcr_forecasts = _fcr_forecasts(reserve_forecasts)
+    active_fcr = {
+        issue_time: [
+            item for item in items if _delivery_day(item.delivery_time) not in blocked_days
+        ]
+        for issue_time, items in fcr_forecasts.items()
+    }
+    active_fcr = {key: items for key, items in active_fcr.items() if items}
+    fcr = _solve_reserve_windows(commitments, active_fcr, config.optimizer, balancing_headroom)
+    fcr.extend(
+        _flat_reserve_forecast(item, config.optimizer)
+        for items in fcr_forecasts.values()
+        for item in items
+        if _delivery_day(item.delivery_time) in blocked_days
     )
     reserve = balancing + fcr
+    allowed_imbalance = {
+        delivery_time: item
+        for delivery_time, item in _load_imbalance_forecasts(config).items()
+        if _delivery_day(delivery_time) not in blocked_days
+    }
     imbalance = _solve_imbalance_windows(
         commitments,
-        _load_imbalance_forecasts(config),
+        allowed_imbalance,
         _reserve_headroom(reserve, config.optimizer),
         config.optimizer,
     )
     return commitments, reserve, imbalance
 
 
-def run_energy_dispatch(config: PipelineConfig) -> DispatchRunResult:
+def run_energy_dispatch(
+    config: PipelineConfig,
+    *,
+    energy_gate: Callable[[tuple[DispatchInterval, ...]], bool] | None = None,
+) -> DispatchRunResult:
     """Run 07:00 balancing, 10:00 energy, 17:30 FCR, then T-60 recourse."""
     forecasts, explicit_issue_time = _load_promoted_forecasts(config)
     if config.optimizer.horizon_days > 1 and not explicit_issue_time:
         raise ValueError("multi-day horizons require explicit issue_time forecast vintages")
-    energy, reserve, imbalance = _causal_dispatch_stages(config, forecasts)
+    energy, reserve, imbalance = _causal_dispatch_stages(config, forecasts, energy_gate=energy_gate)
     energy_rows = _schedule_rows(energy, config.optimizer)
     imbalance_rows = _imbalance_rows(imbalance, config.optimizer)
     reserve_rows = _reserve_rows(reserve)
@@ -672,9 +758,76 @@ def run_energy_dispatch(config: PipelineConfig) -> DispatchRunResult:
     )
 
 
+def run_flat_dispatch(
+    config: PipelineConfig,
+    forecasts: list[DispatchForecast],
+    *,
+    solver_status: str,
+) -> DispatchRunResult:
+    """Replace every forecast delivery with a physically flat decision."""
+    commitments = [
+        _Commitment(
+            DispatchInterval(
+                issue_time=forecast.issue_time,
+                delivery_time=forecast.delivery_time,
+                duration_hours=forecast.duration_hours,
+                charge_mw=0.0,
+                discharge_mw=0.0,
+                soc_mwh=config.optimizer.initial_soc_mwh,
+                energy_revenue_eur=0.0,
+                degradation_cost_eur=0.0,
+                terminal_value_eur=0.0,
+                objective_eur=0.0,
+            ),
+            solver_status,
+        )
+        for forecast in sorted(forecasts, key=lambda item: item.delivery_time)
+    ]
+    imbalance = [
+        _ImbalanceCommitment(
+            ImbalanceInterval(
+                decision_time=imbalance_forecast_issue_time(commitment.interval.delivery_time),
+                forecast_issue_time=None,
+                delivery_time=commitment.interval.delivery_time,
+                duration_hours=commitment.interval.duration_hours,
+                day_ahead_charge_mw=0.0,
+                day_ahead_discharge_mw=0.0,
+                reserved_up_mw=0.0,
+                reserved_down_mw=0.0,
+                minimum_soc_mwh=0.0,
+                maximum_soc_mwh=config.optimizer.energy_capacity_mwh,
+                imbalance_position_mw=0.0,
+                actual_charge_mw=0.0,
+                actual_discharge_mw=0.0,
+                soc_mwh=config.optimizer.initial_soc_mwh,
+                forecast_price_eur_mwh=None,
+                forecast_value_eur=0.0,
+                degradation_cost_eur=0.0,
+                terminal_value_eur=0.0,
+                objective_eur=0.0,
+            ),
+            commitment.interval.issue_time,
+            solver_status,
+        )
+        for commitment in commitments
+    ]
+    energy_rows = _schedule_rows(commitments, config.optimizer) if commitments else []
+    imbalance_rows = _imbalance_rows(imbalance, config.optimizer) if imbalance else []
+    energy_count, imbalance_count, reserve_count = _persist_rows(
+        config, energy_rows, imbalance_rows, []
+    )
+    return _result(
+        energy_rows,
+        energy_count,
+        _imbalance_result(imbalance_rows, imbalance_count),
+        _reserve_result([], reserve_count),
+    )
+
+
 __all__ = [
     "DispatchRunResult",
     "ImbalanceRunResult",
     "ReserveRunResult",
     "run_energy_dispatch",
+    "run_flat_dispatch",
 ]

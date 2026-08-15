@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from math import isfinite
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pyomo.environ as pyo
 from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
-from zoneinfo import ZoneInfo
 
 from nordic_power_risk.config import DispatchConfig
 from nordic_power_risk.facts.rules import (
@@ -156,7 +156,7 @@ class ImbalanceResult:
 
 
 def _delivery_day(delivery_time: datetime) -> date:
-    return delivery_time.replace(tzinfo=timezone.utc).astimezone(_STOCKHOLM).date()
+    return delivery_time.replace(tzinfo=UTC).astimezone(_STOCKHOLM).date()
 
 
 def _validate_inputs(
@@ -180,12 +180,9 @@ def _validate_inputs(
         _validate_headroom(headroom, config)
 
 
-
 def _validate_headroom(headroom: ReserveHeadroom, config: DispatchConfig) -> None:
     maximum_soc = (
-        config.energy_capacity_mwh
-        if headroom.maximum_soc_mwh is None
-        else headroom.maximum_soc_mwh
+        config.energy_capacity_mwh if headroom.maximum_soc_mwh is None else headroom.maximum_soc_mwh
     )
     values = (
         headroom.reserved_up_mw,
@@ -218,7 +215,10 @@ def _headroom(
         )
     return item
 
-def _soc_balance(model: Any, index: int, forecasts: Sequence[DispatchForecast], config: DispatchConfig) -> Any:
+
+def _soc_balance(
+    model: Any, index: int, forecasts: Sequence[DispatchForecast], config: DispatchConfig
+) -> Any:
     previous = config.initial_soc_mwh if index == 0 else model.soc[index - 1]
     duration = forecasts[index].duration_hours
     return model.soc[index] == (
@@ -238,7 +238,9 @@ def _build_model(
     bounds = (0.0, config.power_limit_mw)
     model.charge = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=bounds)
     model.discharge = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=bounds)
-    model.soc = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.energy_capacity_mwh))
+    model.soc = pyo.Var(
+        model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.energy_capacity_mwh)
+    )
     model.is_charging = pyo.Var(model.intervals, domain=pyo.Binary)
     model.soc_balance = pyo.Constraint(
         model.intervals, rule=lambda m, i: _soc_balance(m, i, forecasts, config)
@@ -254,13 +256,16 @@ def _add_energy_reserve_constraints(
 ) -> None:
     model.charge_exclusive = pyo.Constraint(
         model.intervals,
-        rule=lambda m, i: m.charge[i]
-        <= (config.power_limit_mw - headroom[i].reserved_down_mw) * m.is_charging[i],
+        rule=lambda m, i: (
+            m.charge[i] <= (config.power_limit_mw - headroom[i].reserved_down_mw) * m.is_charging[i]
+        ),
     )
     model.discharge_exclusive = pyo.Constraint(
         model.intervals,
-        rule=lambda m, i: m.discharge[i]
-        <= (config.power_limit_mw - headroom[i].reserved_up_mw) * (1 - m.is_charging[i]),
+        rule=lambda m, i: (
+            m.discharge[i]
+            <= (config.power_limit_mw - headroom[i].reserved_up_mw) * (1 - m.is_charging[i])
+        ),
     )
     start_soc = lambda m, i: config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
     model.reserve_start_minimum = pyo.Constraint(
@@ -277,7 +282,9 @@ def _add_energy_reserve_constraints(
     )
 
 
-def _add_objective(model: Any, forecasts: Sequence[DispatchForecast], config: DispatchConfig) -> None:
+def _add_objective(
+    model: Any, forecasts: Sequence[DispatchForecast], config: DispatchConfig
+) -> None:
     energy_revenue = sum(
         forecast.price_eur_mwh * (model.discharge[i] - model.charge[i]) * forecast.duration_hours
         for i, forecast in enumerate(forecasts)
@@ -287,9 +294,7 @@ def _add_objective(model: Any, forecasts: Sequence[DispatchForecast], config: Di
         for i, forecast in enumerate(forecasts)
     )
     model.energy_revenue = pyo.Expression(expr=energy_revenue)
-    model.degradation_cost = pyo.Expression(
-        expr=config.degradation_cost_eur_mwh * throughput
-    )
+    model.degradation_cost = pyo.Expression(expr=config.degradation_cost_eur_mwh * throughput)
     model.terminal_value = pyo.Expression(
         expr=config.terminal_value_eur_mwh * model.soc[len(forecasts) - 1]
     )
@@ -367,11 +372,7 @@ def solve_energy_dispatch(
 
 
 def _balancing_activation_hours(forecast: ReserveForecast) -> float:
-    return (
-        AFRR_FULL_ACTIVATION_HOURS
-        if forecast.product == "AFRR"
-        else MFRR_FULL_ACTIVATION_HOURS
-    )
+    return AFRR_FULL_ACTIVATION_HOURS if forecast.product == "AFRR" else MFRR_FULL_ACTIVATION_HOURS
 
 
 def _eligible_balancing_forecasts(
@@ -386,12 +387,15 @@ def _eligible_balancing_forecasts(
         if not isfinite(forecast.duration_hours) or forecast.duration_hours <= 0:
             raise ValueError("balancing reserve duration_hours must be finite and positive")
     eligible = [
-        item for item in forecasts
+        item
+        for item in forecasts
         if item.issue_time == afrr_mfrr_capacity_issue_time(item.delivery_time)
     ]
     keys = {(item.delivery_time, item.product, item.direction) for item in eligible}
     if len(keys) != len(eligible):
-        raise ValueError("eligible balancing forecasts contain duplicate delivery, product, and direction")
+        raise ValueError(
+            "eligible balancing forecasts contain duplicate delivery, product, and direction"
+        )
     return sorted(eligible, key=lambda item: (item.delivery_time, item.product, item.direction))
 
 
@@ -451,29 +455,54 @@ def _add_balancing_constraints(
     down = lambda m, i: sum(m.capacity[j] for j in rows[i] if forecasts[j].direction == "down")
     start = lambda m, i: config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
     minimum = lambda m, i: _balancing_requirement(m, rows[i], forecasts, "up", config)
-    maximum = lambda m, i: config.energy_capacity_mwh - _balancing_requirement(m, rows[i], forecasts, "down", config)
-    model.exclusive = pyo.Constraint(model.intervals, rule=lambda m, i: sum(m.capacity[j] for j in rows[i]) <= 1)
-    model.charge_power = pyo.Constraint(model.intervals, rule=lambda m, i: m.charge[i] + down(m, i) <= config.power_limit_mw)
-    model.discharge_power = pyo.Constraint(model.intervals, rule=lambda m, i: m.discharge[i] + up(m, i) <= config.power_limit_mw)
-    model.charge_exclusive = pyo.Constraint(model.intervals, rule=lambda m, i: m.charge[i] <= config.power_limit_mw * m.is_charging[i])
-    model.discharge_exclusive = pyo.Constraint(model.intervals, rule=lambda m, i: m.discharge[i] <= config.power_limit_mw * (1 - m.is_charging[i]))
-    model.start_minimum_soc = pyo.Constraint(model.intervals, rule=lambda m, i: start(m, i) >= minimum(m, i))
-    model.end_minimum_soc = pyo.Constraint(model.intervals, rule=lambda m, i: m.soc[i] >= minimum(m, i))
-    model.start_maximum_soc = pyo.Constraint(model.intervals, rule=lambda m, i: start(m, i) <= maximum(m, i))
-    model.end_maximum_soc = pyo.Constraint(model.intervals, rule=lambda m, i: m.soc[i] <= maximum(m, i))
+    maximum = lambda m, i: (
+        config.energy_capacity_mwh - _balancing_requirement(m, rows[i], forecasts, "down", config)
+    )
+    model.exclusive = pyo.Constraint(
+        model.intervals, rule=lambda m, i: sum(m.capacity[j] for j in rows[i]) <= 1
+    )
+    model.charge_power = pyo.Constraint(
+        model.intervals, rule=lambda m, i: m.charge[i] + down(m, i) <= config.power_limit_mw
+    )
+    model.discharge_power = pyo.Constraint(
+        model.intervals, rule=lambda m, i: m.discharge[i] + up(m, i) <= config.power_limit_mw
+    )
+    model.charge_exclusive = pyo.Constraint(
+        model.intervals, rule=lambda m, i: m.charge[i] <= config.power_limit_mw * m.is_charging[i]
+    )
+    model.discharge_exclusive = pyo.Constraint(
+        model.intervals,
+        rule=lambda m, i: m.discharge[i] <= config.power_limit_mw * (1 - m.is_charging[i]),
+    )
+    model.start_minimum_soc = pyo.Constraint(
+        model.intervals, rule=lambda m, i: start(m, i) >= minimum(m, i)
+    )
+    model.end_minimum_soc = pyo.Constraint(
+        model.intervals, rule=lambda m, i: m.soc[i] >= minimum(m, i)
+    )
+    model.start_maximum_soc = pyo.Constraint(
+        model.intervals, rule=lambda m, i: start(m, i) <= maximum(m, i)
+    )
+    model.end_maximum_soc = pyo.Constraint(
+        model.intervals, rule=lambda m, i: m.soc[i] <= maximum(m, i)
+    )
 
 
-def _build_balancing_model(
-    forecasts: Sequence[ReserveForecast], config: DispatchConfig
-) -> Any:
+def _build_balancing_model(forecasts: Sequence[ReserveForecast], config: DispatchConfig) -> Any:
     _, rows = _balancing_delivery_rows(forecasts)
     model = pyo.ConcreteModel()
     model.rows = pyo.RangeSet(0, len(forecasts) - 1)
     model.intervals = pyo.RangeSet(0, len(rows) - 1)
     model.capacity = pyo.Var(model.rows, domain=pyo.Binary)
-    model.charge = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.power_limit_mw))
-    model.discharge = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.power_limit_mw))
-    model.soc = pyo.Var(model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.energy_capacity_mwh))
+    model.charge = pyo.Var(
+        model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.power_limit_mw)
+    )
+    model.discharge = pyo.Var(
+        model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.power_limit_mw)
+    )
+    model.soc = pyo.Var(
+        model.intervals, domain=pyo.NonNegativeReals, bounds=(0, config.energy_capacity_mwh)
+    )
     model.is_charging = pyo.Var(model.intervals, domain=pyo.Binary)
     model.soc_balance = pyo.Constraint(
         model.intervals,
@@ -481,7 +510,10 @@ def _build_balancing_model(
     )
     _add_balancing_constraints(model, rows, forecasts, config)
     model.capacity_value = pyo.Expression(
-        expr=sum(item.forecast_value_eur_mw_h * model.capacity[i] * item.duration_hours for i, item in enumerate(forecasts))
+        expr=sum(
+            item.forecast_value_eur_mw_h * model.capacity[i] * item.duration_hours
+            for i, item in enumerate(forecasts)
+        )
     )
     model.objective = pyo.Objective(expr=model.capacity_value, sense=pyo.maximize)
     return model
@@ -497,16 +529,13 @@ def solve_balancing_reserve_dispatch(
     model = _build_balancing_model(eligible, config)
     status = _solve_model(model)
     intervals = tuple(
-        _reserve_interval(model, item, index, config, status)
-        for index, item in enumerate(eligible)
+        _reserve_interval(model, item, index, config, status) for index, item in enumerate(eligible)
     )
     value = float(pyo.value(model.capacity_value))
     return ReserveResult(intervals, value, value, status)
 
 
-def _validate_reserve_forecast(
-    forecast: ReserveForecast, energy: DispatchInterval
-) -> None:
+def _validate_reserve_forecast(forecast: ReserveForecast, energy: DispatchInterval) -> None:
     products = {("FCR_N", "symmetric"), ("FCR_D", "up"), ("FCR_D", "down")}
     if (forecast.product, forecast.direction) not in products:
         raise ValueError("unsupported FCR product or direction")
@@ -542,8 +571,7 @@ def _validate_energy_headroom(energy: DispatchInterval, config: DispatchConfig) 
         raise ValueError("fixed day-ahead energy violates charge/discharge exclusivity")
     soc_values = (energy.soc_mwh, _energy_start_soc(energy, config))
     if any(
-        not isfinite(value) or not 0 <= value <= config.energy_capacity_mwh
-        for value in soc_values
+        not isfinite(value) or not 0 <= value <= config.energy_capacity_mwh for value in soc_values
     ):
         raise ValueError("fixed day-ahead state of charge is outside physical limits")
 
@@ -553,7 +581,8 @@ def _reserve_up(model: Any, index: int, forecasts: Sequence[ReserveForecast]) ->
     factor = (
         FCR_N_POWER_HEADROOM_FACTOR
         if forecast.product == "FCR_N"
-        else 1.0 if forecast.direction == "up"
+        else 1.0
+        if forecast.direction == "up"
         else FCR_D_OPPOSITE_POWER_FACTOR
     )
     return factor * model.capacity[index]
@@ -564,7 +593,8 @@ def _reserve_down(model: Any, index: int, forecasts: Sequence[ReserveForecast]) 
     factor = (
         FCR_N_POWER_HEADROOM_FACTOR
         if forecast.product == "FCR_N"
-        else 1.0 if forecast.direction == "down"
+        else 1.0
+        if forecast.direction == "down"
         else FCR_D_OPPOSITE_POWER_FACTOR
     )
     return factor * model.capacity[index]
@@ -609,22 +639,43 @@ def _reserve_maximum_soc(
 
 
 def _add_reserve_energy_constraints(
-    model: Any, forecasts: Sequence[ReserveForecast], energy: DispatchInterval, config: DispatchConfig
+    model: Any,
+    forecasts: Sequence[ReserveForecast],
+    energy: DispatchInterval,
+    config: DispatchConfig,
 ) -> None:
     start_soc = _energy_start_soc(energy, config)
     minimum = lambda m, i: _reserve_minimum_soc(m, i, forecasts, config)
     maximum = lambda m, i: _reserve_maximum_soc(m, i, forecasts, config)
     model.start_minimum_soc = pyo.Constraint(
-        model.rows, rule=lambda m, i: start_soc >= minimum(m, i) if _requires_up_energy(forecasts[i]) else pyo.Constraint.Skip
+        model.rows,
+        rule=lambda m, i: (
+            start_soc >= minimum(m, i) if _requires_up_energy(forecasts[i]) else pyo.Constraint.Skip
+        ),
     )
     model.end_minimum_soc = pyo.Constraint(
-        model.rows, rule=lambda m, i: energy.soc_mwh >= minimum(m, i) if _requires_up_energy(forecasts[i]) else pyo.Constraint.Skip
+        model.rows,
+        rule=lambda m, i: (
+            energy.soc_mwh >= minimum(m, i)
+            if _requires_up_energy(forecasts[i])
+            else pyo.Constraint.Skip
+        ),
     )
     model.start_maximum_soc = pyo.Constraint(
-        model.rows, rule=lambda m, i: start_soc <= maximum(m, i) if _requires_down_energy(forecasts[i]) else pyo.Constraint.Skip
+        model.rows,
+        rule=lambda m, i: (
+            start_soc <= maximum(m, i)
+            if _requires_down_energy(forecasts[i])
+            else pyo.Constraint.Skip
+        ),
     )
     model.end_maximum_soc = pyo.Constraint(
-        model.rows, rule=lambda m, i: energy.soc_mwh <= maximum(m, i) if _requires_down_energy(forecasts[i]) else pyo.Constraint.Skip
+        model.rows,
+        rule=lambda m, i: (
+            energy.soc_mwh <= maximum(m, i)
+            if _requires_down_energy(forecasts[i])
+            else pyo.Constraint.Skip
+        ),
     )
 
 
@@ -638,17 +689,23 @@ def _add_reserve_constraints(
     model.selected_capacity = pyo.Constraint(
         model.rows, rule=lambda m, i: m.capacity[i] <= config.power_limit_mw * m.selected[i]
     )
-    prior_award = prior.reserved_up_mw > POWER_TOLERANCE_MW or prior.reserved_down_mw > POWER_TOLERANCE_MW
+    prior_award = (
+        prior.reserved_up_mw > POWER_TOLERANCE_MW or prior.reserved_down_mw > POWER_TOLERANCE_MW
+    )
     model.exclusive = pyo.Constraint(
         expr=sum(model.selected[i] for i in model.rows) <= (0 if prior_award else 1)
     )
     model.up_power = pyo.Constraint(
-        expr=energy.discharge_mw + prior.reserved_up_mw
-        + sum(_reserve_up(model, i, forecasts) for i in model.rows) <= config.power_limit_mw
+        expr=energy.discharge_mw
+        + prior.reserved_up_mw
+        + sum(_reserve_up(model, i, forecasts) for i in model.rows)
+        <= config.power_limit_mw
     )
     model.down_power = pyo.Constraint(
-        expr=energy.charge_mw + prior.reserved_down_mw
-        + sum(_reserve_down(model, i, forecasts) for i in model.rows) <= config.power_limit_mw
+        expr=energy.charge_mw
+        + prior.reserved_down_mw
+        + sum(_reserve_down(model, i, forecasts) for i in model.rows)
+        <= config.power_limit_mw
     )
     _add_reserve_energy_constraints(model, forecasts, energy, config)
 
@@ -683,20 +740,36 @@ def _reserve_interval(
     if forecast.product == "FCR_N":
         reserved_up = reserved_down = FCR_N_POWER_HEADROOM_FACTOR * capacity
     elif forecast.product == "FCR_D":
-        reserved_up = capacity if forecast.direction == "up" else FCR_D_OPPOSITE_POWER_FACTOR * capacity
-        reserved_down = capacity if forecast.direction == "down" else FCR_D_OPPOSITE_POWER_FACTOR * capacity
+        reserved_up = (
+            capacity if forecast.direction == "up" else FCR_D_OPPOSITE_POWER_FACTOR * capacity
+        )
+        reserved_down = (
+            capacity if forecast.direction == "down" else FCR_D_OPPOSITE_POWER_FACTOR * capacity
+        )
     else:
         reserved_up = capacity if forecast.direction == "up" else 0.0
         reserved_down = capacity if forecast.direction == "down" else 0.0
     hours = _reserve_activation_hours(forecast)
-    minimum_soc = capacity * hours / config.one_way_efficiency if _requires_up_energy(forecast) else 0.0
-    maximum_soc = config.energy_capacity_mwh - config.one_way_efficiency * capacity * hours if _requires_down_energy(forecast) else config.energy_capacity_mwh
+    minimum_soc = (
+        capacity * hours / config.one_way_efficiency if _requires_up_energy(forecast) else 0.0
+    )
+    maximum_soc = (
+        config.energy_capacity_mwh - config.one_way_efficiency * capacity * hours
+        if _requires_down_energy(forecast)
+        else config.energy_capacity_mwh
+    )
     return ReserveInterval(
-        product=forecast.product, direction=forecast.direction, issue_time=forecast.issue_time,
-        delivery_time=forecast.delivery_time, duration_hours=forecast.duration_hours,
-        forecast_value_eur_mw_h=forecast.forecast_value_eur_mw_h, capacity_mw=capacity,
-        reserved_up_mw=reserved_up, reserved_down_mw=reserved_down,
-        minimum_soc_mwh=minimum_soc, maximum_soc_mwh=maximum_soc,
+        product=forecast.product,
+        direction=forecast.direction,
+        issue_time=forecast.issue_time,
+        delivery_time=forecast.delivery_time,
+        duration_hours=forecast.duration_hours,
+        forecast_value_eur_mw_h=forecast.forecast_value_eur_mw_h,
+        capacity_mw=capacity,
+        reserved_up_mw=reserved_up,
+        reserved_down_mw=reserved_down,
+        minimum_soc_mwh=minimum_soc,
+        maximum_soc_mwh=maximum_soc,
         conditional_acceptance=capacity > POWER_TOLERANCE_MW,
         capacity_value_eur=forecast.forecast_value_eur_mw_h * capacity * forecast.duration_hours,
         solver_status=status,
@@ -717,7 +790,9 @@ def solve_reserve_dispatch(
     eligible = _eligible_reserve_forecasts(forecasts, energy)
     if not eligible:
         return ReserveResult(
-            intervals=(), capacity_value_eur=0.0, objective_eur=0.0,
+            intervals=(),
+            capacity_value_eur=0.0,
+            objective_eur=0.0,
             solver_status="not_solved",
         )
     model = _build_reserve_model(eligible, energy, config, prior)
@@ -757,7 +832,9 @@ def _validate_reserved_headroom(
         raise ValueError("reserved headroom exceeds physical power limits")
     maximum_soc = _maximum_soc(dispatch_input, config)
     soc_bounds = (dispatch_input.minimum_soc_mwh, maximum_soc)
-    if any(not isfinite(value) or not 0 <= value <= config.energy_capacity_mwh for value in soc_bounds):
+    if any(
+        not isfinite(value) or not 0 <= value <= config.energy_capacity_mwh for value in soc_bounds
+    ):
         raise ValueError("reserved state-of-charge headroom exceeds physical limits")
     if dispatch_input.minimum_soc_mwh > maximum_soc:
         raise ValueError("reserved state-of-charge bounds are inverted")
@@ -832,24 +909,18 @@ def _add_imbalance_reserve_soc_constraints(
     )
 
 
-def _imbalance_position(
-    model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]
-) -> Any:
+def _imbalance_position(model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
     commitment = inputs[index].day_ahead_discharge_mw - inputs[index].day_ahead_charge_mw
     return model.discharge[index] - model.charge[index] - commitment
 
 
-def _flat_imbalance(
-    model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]
-) -> Any:
+def _flat_imbalance(model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
     if _eligible_imbalance_price(inputs[index]) is not None:
         return pyo.Constraint.Skip
     return model.imbalance_position[index] == 0.0
 
 
-def _imbalance_forecast_value(
-    model: Any, inputs: Sequence[ImbalanceDispatchInput]
-) -> Any:
+def _imbalance_forecast_value(model: Any, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
     return sum(
         (_eligible_imbalance_price(item) or 0.0)
         * model.imbalance_position[index]
@@ -858,9 +929,7 @@ def _imbalance_forecast_value(
     )
 
 
-def _imbalance_throughput(
-    model: Any, inputs: Sequence[ImbalanceDispatchInput]
-) -> Any:
+def _imbalance_throughput(model: Any, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
     return sum(
         (model.charge[index] + model.discharge[index]) * item.duration_hours
         for index, item in enumerate(inputs)
@@ -870,9 +939,7 @@ def _imbalance_throughput(
 def _add_imbalance_objective(
     model: Any, inputs: Sequence[ImbalanceDispatchInput], config: DispatchConfig
 ) -> None:
-    model.forecast_value = pyo.Expression(
-        expr=_imbalance_forecast_value(model, inputs)
-    )
+    model.forecast_value = pyo.Expression(expr=_imbalance_forecast_value(model, inputs))
     model.degradation_cost = pyo.Expression(
         expr=config.degradation_cost_eur_mwh * _imbalance_throughput(model, inputs)
     )
@@ -905,19 +972,20 @@ def _add_imbalance_power_constraints(
 ) -> None:
     model.charge_exclusive = pyo.Constraint(
         model.intervals,
-        rule=lambda m, i: m.charge[i]
-        <= (config.power_limit_mw - inputs[i].reserved_down_mw) * m.is_charging[i],
+        rule=lambda m, i: (
+            m.charge[i] <= (config.power_limit_mw - inputs[i].reserved_down_mw) * m.is_charging[i]
+        ),
     )
     model.discharge_exclusive = pyo.Constraint(
         model.intervals,
-        rule=lambda m, i: m.discharge[i]
-        <= (config.power_limit_mw - inputs[i].reserved_up_mw) * (1 - m.is_charging[i]),
+        rule=lambda m, i: (
+            m.discharge[i]
+            <= (config.power_limit_mw - inputs[i].reserved_up_mw) * (1 - m.is_charging[i])
+        ),
     )
 
 
-def _build_imbalance_model(
-    inputs: Sequence[ImbalanceDispatchInput], config: DispatchConfig
-) -> Any:
+def _build_imbalance_model(inputs: Sequence[ImbalanceDispatchInput], config: DispatchConfig) -> Any:
     model = pyo.ConcreteModel()
     model.intervals = pyo.RangeSet(0, len(inputs) - 1)
     bounds = (0.0, config.power_limit_mw)
@@ -944,9 +1012,7 @@ def _imbalance_values(
     price = _eligible_imbalance_price(dispatch_input)
     forecast_value = (price or 0.0) * position * dispatch_input.duration_hours
     degradation = (
-        config.degradation_cost_eur_mwh
-        * (charge + discharge)
-        * dispatch_input.duration_hours
+        config.degradation_cost_eur_mwh * (charge + discharge) * dispatch_input.duration_hours
     )
     terminal = float(pyo.value(model.terminal_value)) if is_last else 0.0
     return charge, discharge, position, price, forecast_value, degradation, terminal
@@ -955,21 +1021,29 @@ def _imbalance_values(
 def _extract_imbalance_interval(
     model: Any, item: ImbalanceDispatchInput, index: int, config: DispatchConfig, is_last: bool
 ) -> ImbalanceInterval:
-    charge, discharge, position, price, forecast_value, degradation, terminal = (
-        _imbalance_values(model, item, index, config, is_last)
+    charge, discharge, position, price, forecast_value, degradation, terminal = _imbalance_values(
+        model, item, index, config, is_last
     )
     return ImbalanceInterval(
         decision_time=imbalance_forecast_issue_time(item.delivery_time),
         forecast_issue_time=item.forecast_issue_time if price is not None else None,
-        delivery_time=item.delivery_time, duration_hours=item.duration_hours,
+        delivery_time=item.delivery_time,
+        duration_hours=item.duration_hours,
         day_ahead_charge_mw=item.day_ahead_charge_mw,
         day_ahead_discharge_mw=item.day_ahead_discharge_mw,
-        reserved_up_mw=item.reserved_up_mw, reserved_down_mw=item.reserved_down_mw,
-        minimum_soc_mwh=item.minimum_soc_mwh, maximum_soc_mwh=_maximum_soc(item, config),
-        imbalance_position_mw=position, actual_charge_mw=charge, actual_discharge_mw=discharge,
-        soc_mwh=float(pyo.value(model.soc[index])), forecast_price_eur_mwh=price,
-        forecast_value_eur=forecast_value, degradation_cost_eur=degradation,
-        terminal_value_eur=terminal, objective_eur=forecast_value - degradation + terminal,
+        reserved_up_mw=item.reserved_up_mw,
+        reserved_down_mw=item.reserved_down_mw,
+        minimum_soc_mwh=item.minimum_soc_mwh,
+        maximum_soc_mwh=_maximum_soc(item, config),
+        imbalance_position_mw=position,
+        actual_charge_mw=charge,
+        actual_discharge_mw=discharge,
+        soc_mwh=float(pyo.value(model.soc[index])),
+        forecast_price_eur_mwh=price,
+        forecast_value_eur=forecast_value,
+        degradation_cost_eur=degradation,
+        terminal_value_eur=terminal,
+        objective_eur=forecast_value - degradation + terminal,
     )
 
 

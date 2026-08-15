@@ -207,8 +207,7 @@ def select_best_rung(
     eligible = [
         r
         for r in results
-        if r.dm_pvalue is None
-        or (r.dm_stat is not None and r.dm_pvalue < alpha and r.dm_stat < 0)
+        if r.dm_pvalue is None or (r.dm_stat is not None and r.dm_pvalue < alpha and r.dm_stat < 0)
     ]
     return min(eligible, key=lambda r: r.pinball_loss)
 

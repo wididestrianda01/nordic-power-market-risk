@@ -4,11 +4,9 @@ from types import SimpleNamespace
 import pytest
 from pyomo.opt import SolverStatus, TerminationCondition
 
-from nordic_power_risk.optimize import dispatch
-
 from nordic_power_risk.config import DispatchConfig
+from nordic_power_risk.optimize import dispatch
 from nordic_power_risk.optimize.dispatch import DispatchForecast, solve_energy_dispatch
-
 
 ISSUE_TIME = datetime(2025, 1, 1, 9)
 
@@ -50,9 +48,7 @@ def test_terminal_value_preserves_stored_energy() -> None:
 
     assert no_value.intervals[-1].soc_mwh == pytest.approx(0.0)
     assert with_value.intervals[-1].soc_mwh > no_value.intervals[-1].soc_mwh
-    assert with_value.terminal_value_eur == pytest.approx(
-        100.0 * with_value.intervals[-1].soc_mwh
-    )
+    assert with_value.terminal_value_eur == pytest.approx(100.0 * with_value.intervals[-1].soc_mwh)
 
 
 def test_negative_price_never_charges_and_discharges_simultaneously() -> None:
@@ -180,9 +176,7 @@ def _imbalance_input(
 ) -> object:
     delivery_time = datetime(2025, 1, 2)
     issue_time = (
-        None
-        if issue_offset is None
-        else delivery_time - timedelta(minutes=60) + issue_offset
+        None if issue_offset is None else delivery_time - timedelta(minutes=60) + issue_offset
     )
     return dispatch.ImbalanceDispatchInput(
         delivery_time=delivery_time,
@@ -207,9 +201,7 @@ def test_favorable_imbalance_forecast_changes_only_actual_setpoint() -> None:
 
     assert interval.day_ahead_charge_mw == pytest.approx(1.0)
     assert interval.day_ahead_discharge_mw == pytest.approx(0.0)
-    assert interval.actual_charge_mw * interval.actual_discharge_mw == pytest.approx(
-        0.0, abs=1e-8
-    )
+    assert interval.actual_charge_mw * interval.actual_discharge_mw == pytest.approx(0.0, abs=1e-8)
     assert interval.actual_charge_mw <= config.power_limit_mw
     assert interval.actual_discharge_mw <= config.power_limit_mw
     assert interval.soc_mwh == pytest.approx(
@@ -252,29 +244,43 @@ def test_unavailable_imbalance_forecast_keeps_only_imbalance_leg_flat(
 
 
 def _energy_interval(
-    *, charge_mw: float = 0.0, discharge_mw: float = 0.0,
-    soc_mwh: float = 1.0, duration_hours: float = 1.0,
+    *,
+    charge_mw: float = 0.0,
+    discharge_mw: float = 0.0,
+    soc_mwh: float = 1.0,
+    duration_hours: float = 1.0,
     delivery_time: datetime = datetime(2025, 1, 2),
 ) -> dispatch.DispatchInterval:
     return dispatch.DispatchInterval(
-        issue_time=ISSUE_TIME, delivery_time=delivery_time,
-        duration_hours=duration_hours, charge_mw=charge_mw,
-        discharge_mw=discharge_mw, soc_mwh=soc_mwh,
-        energy_revenue_eur=0.0, degradation_cost_eur=0.0,
-        terminal_value_eur=0.0, objective_eur=0.0,
+        issue_time=ISSUE_TIME,
+        delivery_time=delivery_time,
+        duration_hours=duration_hours,
+        charge_mw=charge_mw,
+        discharge_mw=discharge_mw,
+        soc_mwh=soc_mwh,
+        energy_revenue_eur=0.0,
+        degradation_cost_eur=0.0,
+        terminal_value_eur=0.0,
+        objective_eur=0.0,
     )
 
 
 def _reserve_forecast(
-    product: str, direction: str, price: float = 100.0,
-    issue_offset: timedelta = timedelta(), duration_hours: float = 1.0,
+    product: str,
+    direction: str,
+    price: float = 100.0,
+    issue_offset: timedelta = timedelta(),
+    duration_hours: float = 1.0,
 ) -> object:
     delivery_time = datetime(2025, 1, 2)
     exact_issue = datetime(2025, 1, 1, 16, 30)
     return dispatch.ReserveForecast(
-        product=product, direction=direction,
-        issue_time=exact_issue + issue_offset, delivery_time=delivery_time,
-        forecast_value_eur_mw_h=price, duration_hours=duration_hours,
+        product=product,
+        direction=direction,
+        issue_time=exact_issue + issue_offset,
+        delivery_time=delivery_time,
+        forecast_value_eur_mw_h=price,
+        duration_hours=duration_hours,
     )
 
 
@@ -317,8 +323,7 @@ def test_fcr_d_down_endurance_binds_high_soc() -> None:
     expected = 0.1 * 3.0 / config.one_way_efficiency
     assert interval.capacity_mw == pytest.approx(expected)
     assert interval.maximum_soc_mwh == pytest.approx(
-        config.energy_capacity_mwh
-        - config.one_way_efficiency * interval.capacity_mw / 3.0
+        config.energy_capacity_mwh - config.one_way_efficiency * interval.capacity_mw / 3.0
     )
 
 
@@ -354,14 +359,10 @@ def test_reserve_commitments_are_conservatively_exclusive() -> None:
     )
 
     awarded = [interval for interval in result.intervals if interval.capacity_mw > 1e-8]
-    assert [(interval.product, interval.direction) for interval in awarded] == [
-        ("FCR_D", "up")
-    ]
+    assert [(interval.product, interval.direction) for interval in awarded] == [("FCR_D", "up")]
     assert result.capacity_value_eur == pytest.approx(
         sum(
-            interval.forecast_value_eur_mw_h
-            * interval.capacity_mw
-            * interval.duration_hours
+            interval.forecast_value_eur_mw_h * interval.capacity_mw * interval.duration_hours
             for interval in result.intervals
         )
     )
@@ -386,11 +387,15 @@ def test_imbalance_recourse_preserves_awarded_reserve_headroom() -> None:
     config = DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
     minimum_soc = config.initial_soc_mwh - 0.2 / config.one_way_efficiency
     dispatch_input = dispatch.ImbalanceDispatchInput(
-        delivery_time=datetime(2025, 1, 2), duration_hours=1.0,
-        day_ahead_charge_mw=0.0, day_ahead_discharge_mw=0.0,
+        delivery_time=datetime(2025, 1, 2),
+        duration_hours=1.0,
+        day_ahead_charge_mw=0.0,
+        day_ahead_discharge_mw=0.0,
         forecast_issue_time=datetime(2025, 1, 1, 23),
-        forecast_price_eur_mwh=1_000.0, reserved_up_mw=0.8,
-        reserved_down_mw=0.2, minimum_soc_mwh=minimum_soc,
+        forecast_price_eur_mwh=1_000.0,
+        reserved_up_mw=0.8,
+        reserved_down_mw=0.2,
+        minimum_soc_mwh=minimum_soc,
         maximum_soc_mwh=config.energy_capacity_mwh,
     )
 
@@ -418,10 +423,7 @@ def test_reserve_optimizer_public_api_is_exported() -> None:
     assert ReserveResult is dispatch.ReserveResult
     assert ReserveRunResult.__name__ == "ReserveRunResult"
     assert solve_reserve_dispatch is dispatch.solve_reserve_dispatch
-    assert (
-        solve_balancing_reserve_dispatch
-        is dispatch.solve_balancing_reserve_dispatch
-    )
+    assert solve_balancing_reserve_dispatch is dispatch.solve_balancing_reserve_dispatch
 
 
 def test_fcr_mechanics_use_named_constants() -> None:
@@ -473,11 +475,7 @@ def test_fcr_d_up_end_soc_binds_while_discharging() -> None:
         config,
     ).intervals[0]
 
-    expected = (
-        end_soc
-        * config.one_way_efficiency
-        / dispatch.FCR_D_FULL_ACTIVATION_HOURS
-    )
+    expected = end_soc * config.one_way_efficiency / dispatch.FCR_D_FULL_ACTIVATION_HOURS
     assert interval.capacity_mw == pytest.approx(expected)
     assert interval.capacity_mw < config.power_limit_mw - 0.2
 
@@ -491,9 +489,8 @@ def test_fcr_d_down_end_soc_binds_while_charging() -> None:
         config,
     ).intervals[0]
 
-    expected = (
-        (config.energy_capacity_mwh - end_soc)
-        / (config.one_way_efficiency * dispatch.FCR_D_FULL_ACTIVATION_HOURS)
+    expected = (config.energy_capacity_mwh - end_soc) / (
+        config.one_way_efficiency * dispatch.FCR_D_FULL_ACTIVATION_HOURS
     )
     assert interval.capacity_mw == pytest.approx(expected)
     assert interval.capacity_mw < config.power_limit_mw - 0.2
@@ -521,15 +518,16 @@ def test_fcr_n_requires_one_hour_energy_in_both_directions(soc_mwh: float) -> No
     ],
 )
 def test_fcr_n_one_hour_energy_and_power_with_nonzero_day_ahead(
-    charge_mw: float, discharge_mw: float, start_soc: float,
-    end_soc: float, boundary: str,
+    charge_mw: float,
+    discharge_mw: float,
+    start_soc: float,
+    end_soc: float,
+    boundary: str,
 ) -> None:
     config = DispatchConfig(terminal_value_eur_mwh=0.0)
     interval = dispatch.solve_reserve_dispatch(
         [_reserve_forecast("FCR_N", "symmetric")],
-        _energy_interval(
-            charge_mw=charge_mw, discharge_mw=discharge_mw, soc_mwh=end_soc
-        ),
+        _energy_interval(charge_mw=charge_mw, discharge_mw=discharge_mw, soc_mwh=end_soc),
         config,
     ).intervals[0]
 
@@ -592,9 +590,7 @@ def test_summer_fcr_gate_is_1530_utc_and_exact() -> None:
     delivery_time = datetime(2025, 7, 2)
     exact_issue = datetime(2025, 7, 1, 15, 30)
     forecasts = [
-        dispatch.ReserveForecast(
-            "FCR_D", "up", exact_issue + offset, delivery_time, price
-        )
+        dispatch.ReserveForecast("FCR_D", "up", exact_issue + offset, delivery_time, price)
         for offset, price in (
             (-timedelta(minutes=1), 10_000.0),
             (timedelta(), 10.0),
@@ -625,10 +621,13 @@ def test_imbalance_start_soc_must_preserve_awarded_bounds(
     initial_soc: float, minimum_soc: float, maximum_soc: float, price: float
 ) -> None:
     dispatch_input = dispatch.ImbalanceDispatchInput(
-        delivery_time=datetime(2025, 1, 2), duration_hours=1.0,
-        day_ahead_charge_mw=0.0, day_ahead_discharge_mw=0.0,
+        delivery_time=datetime(2025, 1, 2),
+        duration_hours=1.0,
+        day_ahead_charge_mw=0.0,
+        day_ahead_discharge_mw=0.0,
         forecast_issue_time=datetime(2025, 1, 1, 23),
-        forecast_price_eur_mwh=price, minimum_soc_mwh=minimum_soc,
+        forecast_price_eur_mwh=price,
+        minimum_soc_mwh=minimum_soc,
         maximum_soc_mwh=maximum_soc,
     )
 
@@ -643,11 +642,15 @@ def test_negative_recourse_preserves_down_power_and_maximum_soc() -> None:
     config = DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
     maximum_soc = config.initial_soc_mwh + config.one_way_efficiency * 0.2
     dispatch_input = dispatch.ImbalanceDispatchInput(
-        delivery_time=datetime(2025, 1, 2), duration_hours=1.0,
-        day_ahead_charge_mw=0.0, day_ahead_discharge_mw=0.0,
+        delivery_time=datetime(2025, 1, 2),
+        duration_hours=1.0,
+        day_ahead_charge_mw=0.0,
+        day_ahead_discharge_mw=0.0,
         forecast_issue_time=datetime(2025, 1, 1, 23),
-        forecast_price_eur_mwh=-1_000.0, reserved_up_mw=0.2,
-        reserved_down_mw=0.8, minimum_soc_mwh=0.0,
+        forecast_price_eur_mwh=-1_000.0,
+        reserved_up_mw=0.2,
+        reserved_down_mw=0.8,
+        minimum_soc_mwh=0.0,
         maximum_soc_mwh=maximum_soc,
     )
 
@@ -692,7 +695,12 @@ def test_balancing_capacity_is_binary_exclusive_and_negative_price_stays_zero() 
     assert [(row.product, row.direction, row.capacity_mw) for row in awarded] == [
         ("MFRR", "up", 1.0)
     ]
-    assert next(row for row in result.intervals if row.direction == "down" and row.product == "MFRR").capacity_mw == 0.0
+    assert (
+        next(
+            row for row in result.intervals if row.direction == "down" and row.product == "MFRR"
+        ).capacity_mw
+        == 0.0
+    )
 
 
 @pytest.mark.parametrize(
@@ -705,11 +713,12 @@ def test_balancing_capacity_is_binary_exclusive_and_negative_price_stays_zero() 
     ],
 )
 def test_balancing_endurance_and_efficiency_bind_both_soc_boundaries(
-    product: str, direction: str, hours: float, initial_soc: float,
+    product: str,
+    direction: str,
+    hours: float,
+    initial_soc: float,
 ) -> None:
-    config = DispatchConfig(
-        initial_soc_mwh=initial_soc, terminal_value_eur_mwh=0.0
-    )
+    config = DispatchConfig(initial_soc_mwh=initial_soc, terminal_value_eur_mwh=0.0)
 
     interval = dispatch.solve_balancing_reserve_dispatch(
         [_balancing_forecast(product, direction)], config
@@ -717,12 +726,8 @@ def test_balancing_endurance_and_efficiency_bind_both_soc_boundaries(
 
     assert interval.capacity_mw == pytest.approx(1.0)
     if direction == "up":
-        assert interval.minimum_soc_mwh == pytest.approx(
-            hours / config.one_way_efficiency
-        )
-        assert interval.maximum_soc_mwh == pytest.approx(
-            config.energy_capacity_mwh
-        )
+        assert interval.minimum_soc_mwh == pytest.approx(hours / config.one_way_efficiency)
+        assert interval.maximum_soc_mwh == pytest.approx(config.energy_capacity_mwh)
     else:
         assert interval.minimum_soc_mwh == pytest.approx(0.0)
         assert interval.maximum_soc_mwh == pytest.approx(
@@ -754,9 +759,7 @@ def test_balancing_gate_is_exact_and_dst_aware() -> None:
         DispatchConfig(terminal_value_eur_mwh=0.0),
     )
 
-    assert [(row.product, row.direction) for row in result.intervals] == [
-        ("MFRR", "up")
-    ]
+    assert [(row.product, row.direction) for row in result.intervals] == [("MFRR", "up")]
 
 
 def test_balancing_rejects_ffr() -> None:

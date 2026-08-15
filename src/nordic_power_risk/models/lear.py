@@ -32,9 +32,7 @@ def lear_forecast(train: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.Series, p
     x_train = build_design_matrix(fit_rows)
     y_train = fit_rows["price_eur_mwh"].to_numpy()
 
-    model = Pipeline(
-        [("scale", StandardScaler()), ("lasso", LassoCV(cv=5, max_iter=10_000))]
-    )
+    model = Pipeline([("scale", StandardScaler()), ("lasso", LassoCV(cv=5, max_iter=10_000))])
     model.fit(x_train, y_train)
 
     # Rows with missing lags can't be scored by the model; fill for predict() and
