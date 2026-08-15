@@ -62,6 +62,16 @@ def _write_imbalance_forecasts(
         conn.close()
 
 
+def _write_reserve_forecasts(
+    config: PipelineConfig, rows: list[dict[str, object]]
+) -> None:
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(conn, "forecast_reserve", rows)
+    finally:
+        conn.close()
+
+
 def _seed_derived_forecasts(config: PipelineConfig) -> None:
     rows = [
         {"event_time": DELIVERY_TIME + timedelta(hours=hour), "q0_5": price}
@@ -84,6 +94,16 @@ def _fetch_imbalance_dispatch(config: PipelineConfig) -> pd.DataFrame:
     try:
         return conn.execute(
             "SELECT * FROM dispatch_imbalance ORDER BY delivery_time"
+        ).fetchdf()
+    finally:
+        conn.close()
+
+
+def _fetch_reserve_dispatch(config: PipelineConfig) -> pd.DataFrame:
+    conn = get_connection(config.duckdb_path)
+    try:
+        return conn.execute(
+            "SELECT * FROM dispatch_reserve ORDER BY delivery_time, product, direction"
         ).fetchdf()
     finally:
         conn.close()
@@ -372,6 +392,7 @@ def test_optimize_cli_runs_dispatch_and_reports_persisted_rows(tmp_path, monkeyp
     assert "dispatch_energy: 2 rows" in result.output
     assert str(config.duckdb_path) in result.output
     assert "dispatch_imbalance: 2 rows" in result.output
+    assert "dispatch_reserve: 0 rows" in result.output
 
 
 @pytest.mark.parametrize(
@@ -617,6 +638,7 @@ def test_dispatch_tables_replace_atomically(
             config,
             [{"marker": "new-energy"}],
             [{"marker": "new-imbalance"}],
+            [],
         )
 
     if not preexisting:
@@ -792,3 +814,217 @@ def test_degradation_threshold_changes_persisted_recourse_decision(tmp_path) -> 
 
     assert positions[15.0] > 0.0
     assert positions[40.0] == pytest.approx(0.0)
+
+
+def _reserve_row(
+    delivery_time: datetime,
+    *,
+    product: str = "FCR_D",
+    direction: str = "up",
+    price: object = 100.0,
+    issue_offset: timedelta = timedelta(),
+    **extra: object,
+) -> dict[str, object]:
+    issue_time = (
+        datetime.combine(
+            delivery_time.replace(tzinfo=UTC).astimezone(STOCKHOLM).date() - timedelta(days=1),
+            time(17, 30),
+            tzinfo=STOCKHOLM,
+        ).astimezone(UTC).replace(tzinfo=None)
+        + issue_offset
+    )
+    return {
+        "product": product,
+        "direction": direction,
+        "issue_time": issue_time,
+        "delivery_time": delivery_time,
+        "q0_1": 10.0,
+        "q0_5": price,
+        "q0_9": 190.0,
+        "forecast_source": "lgbm",
+        **extra,
+    }
+
+
+def _reserve_row_with(field: str, value: object) -> dict[str, object]:
+    row = _reserve_row(DELIVERY_TIME)
+    row[field] = value
+    return row
+
+
+def test_run_persists_normalized_conditional_reserve_decisions(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    _write_reserve_forecasts(
+        config,
+        [
+            _reserve_row(DELIVERY_TIME, product="FCR_N", direction="symmetric"),
+            _reserve_row(DELIVERY_TIME, product="FCR_D", direction="up"),
+            _reserve_row(DELIVERY_TIME, product="FCR_D", direction="down"),
+        ],
+    )
+
+    result = run_energy_dispatch(config)
+    rows = _fetch_reserve_dispatch(config)
+    imbalance = _fetch_imbalance_dispatch(config).iloc[0]
+
+    assert result.reserve.table == "dispatch_reserve"
+    assert result.reserve.row_count == 3
+    assert list(rows.columns) == [
+        "product",
+        "direction",
+        "issue_time",
+        "delivery_time",
+        "duration_hours",
+        "forecast_value_eur_mw_h",
+        "capacity_mw",
+        "reserved_up_mw",
+        "reserved_down_mw",
+        "minimum_soc_mwh",
+        "maximum_soc_mwh",
+        "conditional_acceptance",
+        "capacity_value_eur",
+        "solver_status",
+    ]
+    assert rows["conditional_acceptance"].tolist() == (
+        rows["capacity_mw"] > 1e-8
+    ).tolist()
+    assert (rows["capacity_mw"] > 1e-8).sum() == 1
+    assert rows["capacity_value_eur"].tolist() == pytest.approx(
+        (
+            rows["forecast_value_eur_mw_h"]
+            * rows["capacity_mw"]
+            * rows["duration_hours"]
+        ).tolist()
+    )
+    assert rows["capacity_value_eur"].sum() == pytest.approx(
+        result.reserve.capacity_value_eur
+    )
+    assert imbalance["reserved_up_mw"] == pytest.approx(rows["reserved_up_mw"].sum())
+    assert imbalance["reserved_down_mw"] == pytest.approx(
+        rows["reserved_down_mw"].sum()
+    )
+    assert imbalance["actual_discharge_mw"] <= 1.0 - imbalance["reserved_up_mw"] + 1e-8
+    assert imbalance["actual_charge_mw"] <= 1.0 - imbalance["reserved_down_mw"] + 1e-8
+    assert imbalance["minimum_soc_mwh"] - 1e-8 <= imbalance["soc_mwh"]
+    assert imbalance["soc_mwh"] <= imbalance["maximum_soc_mwh"] + 1e-8
+
+
+def test_reserve_dispatch_ignores_realized_prices(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    base = _reserve_row(DELIVERY_TIME, realized_price_eur_mw_h=-1_000_000.0)
+    _write_reserve_forecasts(config, [base])
+    first = run_energy_dispatch(config).reserve
+    first_rows = _fetch_reserve_dispatch(config)
+
+    base["realized_price_eur_mw_h"] = 1_000_000.0
+    _write_reserve_forecasts(config, [base])
+    second = run_energy_dispatch(config).reserve
+    second_rows = _fetch_reserve_dispatch(config)
+
+    assert second == first
+    pd.testing.assert_frame_equal(second_rows, first_rows)
+
+
+def test_missing_reserve_forecasts_fall_back_flat_with_schema(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _seed_derived_forecasts(config)
+
+    result = run_energy_dispatch(config)
+    rows = _fetch_reserve_dispatch(config)
+
+    assert result.reserve.row_count == 0
+    assert rows.empty
+    assert "capacity_mw" in rows.columns
+    assert "conditional_acceptance" in rows.columns
+
+
+@pytest.mark.parametrize(
+    "rows,message",
+    [
+        ([{"product": "FCR_D"}], "missing required columns"),
+        ([_reserve_row(DELIVERY_TIME, price="bad")], "q0_5 must be numeric"),
+        ([_reserve_row(DELIVERY_TIME, product="aFRR")], "unsupported FCR"),
+        ([_reserve_row(DELIVERY_TIME, direction="sideways")], "unsupported FCR"),
+        ([_reserve_row_with("forecast_source", "seasonal_naive")], "forecast_source"),
+        ([_reserve_row(DELIVERY_TIME), _reserve_row(DELIVERY_TIME)], "duplicate"),
+        ([_reserve_row_with("issue_time", "not-a-time")], "issue_time must be a valid timestamp"),
+        ([_reserve_row_with("delivery_time", None)], "delivery_time must be a valid timestamp"),
+    ],
+    ids=[
+        "missing-columns", "nonnumeric-price", "unsupported-product",
+        "unsupported-direction", "unsupported-source", "duplicate-exact-key",
+        "invalid-issue-time", "null-delivery-time",
+    ],
+)
+def test_malformed_reserve_forecasts_fail_before_persistence(
+    tmp_path, rows: list[dict[str, object]], message: str
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _seed_derived_forecasts(config)
+    _write_reserve_forecasts(config, rows)
+
+    with pytest.raises(ValueError, match=message):
+        run_energy_dispatch(config)
+
+    assert _dispatch_table_names(config) == set()
+
+
+def test_three_dispatch_tables_replace_atomically(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _seed_derived_forecasts(config)
+    _write_reserve_forecasts(config, [_reserve_row(DELIVERY_TIME)])
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(conn, "dispatch_energy", [{"sentinel": "old-energy"}])
+        write_table(conn, "dispatch_imbalance", [{"sentinel": "old-imbalance"}])
+        write_table(conn, "dispatch_reserve", [{"sentinel": "old-reserve"}])
+    finally:
+        conn.close()
+    real_write = run_module.write_table
+
+    def fail_third(conn, table, rows, columns=None):  # type: ignore[no-untyped-def]
+        if table == "dispatch_reserve":
+            raise RuntimeError("reserve write failed")
+        return real_write(conn, table, rows, columns=columns)
+
+    monkeypatch.setattr(run_module, "write_table", fail_third)
+    with pytest.raises(RuntimeError, match="reserve write failed"):
+        run_energy_dispatch(config)
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        assert conn.execute("SELECT * FROM dispatch_energy").fetchall() == [("old-energy",)]
+        assert conn.execute("SELECT * FROM dispatch_imbalance").fetchall() == [("old-imbalance",)]
+        assert conn.execute("SELECT * FROM dispatch_reserve").fetchall() == [("old-reserve",)]
+    finally:
+        conn.close()
+
+
+def test_optimize_cli_reports_nonzero_reserve_value(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    _write_reserve_forecasts(config, [_reserve_row(DELIVERY_TIME, price=100.0)])
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+
+    result = runner.invoke(app, ["optimize"])
+
+    assert result.exit_code == 0
+    assert "dispatch_reserve: 1 rows" in result.output
+    assert "capacity-value=100.00 EUR" in result.output
+
+
+def test_optimize_cli_fails_for_invalid_reserve_source(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    _write_reserve_forecasts(
+        config, [_reserve_row_with("forecast_source", "seasonal_naive")]
+    )
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+
+    result = runner.invoke(app, ["optimize"])
+
+    assert result.exit_code == 1
+    assert "forecast_source" in result.output
+    assert _dispatch_table_names(config) == set()

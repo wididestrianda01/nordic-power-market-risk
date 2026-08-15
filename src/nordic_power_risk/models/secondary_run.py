@@ -49,6 +49,21 @@ IMBALANCE_FORECAST_COLUMNS = {
     "q0_5": "DOUBLE",
     "q0_9": "DOUBLE",
 }
+RESERVE_TARGETS = {
+    "feature_fcr_d_up": ("FCR_D", "up"),
+    "feature_fcr_d_down": ("FCR_D", "down"),
+    "feature_fcr_n": ("FCR_N", "symmetric"),
+}
+RESERVE_FORECAST_COLUMNS = {
+    "product": "VARCHAR",
+    "direction": "VARCHAR",
+    "issue_time": "TIMESTAMP",
+    "delivery_time": "TIMESTAMP",
+    "q0_1": "DOUBLE",
+    "q0_5": "DOUBLE",
+    "q0_9": "DOUBLE",
+    "forecast_source": "VARCHAR",
+}
 
 
 @dataclass(frozen=True)
@@ -92,23 +107,74 @@ def _optimizer_forecast_rows(
     ]
 
 
-def _persist_imbalance_forecasts(
-    config: PipelineConfig, rows: list[dict[str, object]]
-) -> None:
-    unique = list(
+def _reserve_forecast_rows(
+    table: str, test: pd.DataFrame, quantile_preds: dict[float, pd.Series]
+) -> list[dict[str, object]]:
+    product, direction = RESERVE_TARGETS[table]
+    rows = _optimizer_forecast_rows(test, quantile_preds)
+    return [
         {
-            (row["issue_time"], row["event_time"]): row
+            "product": product,
+            "direction": direction,
+            "issue_time": row["issue_time"],
+            "delivery_time": row["event_time"],
+            "q0_1": row["q0_1"],
+            "q0_5": row["q0_5"],
+            "q0_9": row["q0_9"],
+            "forecast_source": "lgbm",
+        }
+        for row in rows
+    ]
+
+
+def _unique_imbalance_forecasts(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return list(
+        {(row["issue_time"], row["event_time"]): row for row in rows}.values()
+    )
+
+
+def _unique_reserve_forecasts(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return list(
+        {
+            (row["product"], row["direction"], row["issue_time"], row["delivery_time"]): row
             for row in rows
         }.values()
     )
+
+
+def _write_optimizer_forecasts(
+    conn: object,
+    imbalance_rows: list[dict[str, object]],
+    reserve_rows: list[dict[str, object]],
+) -> None:
+    write_table(
+        conn, "forecast_imbalance", _unique_imbalance_forecasts(imbalance_rows),
+        columns=IMBALANCE_FORECAST_COLUMNS,
+    )
+    write_table(
+        conn, "forecast_reserve", _unique_reserve_forecasts(reserve_rows),
+        columns=RESERVE_FORECAST_COLUMNS,
+    )
+
+
+def _persist_optimizer_forecasts(
+    config: PipelineConfig,
+    imbalance_rows: list[dict[str, object]],
+    reserve_rows: list[dict[str, object]],
+) -> None:
     conn = get_connection(config.duckdb_path)
+    conn.execute("BEGIN TRANSACTION")
     try:
-        write_table(
-            conn,
-            "forecast_imbalance",
-            unique,
-            columns=IMBALANCE_FORECAST_COLUMNS,
-        )
+        _write_optimizer_forecasts(conn, imbalance_rows, reserve_rows)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
     finally:
         conn.close()
 
@@ -131,6 +197,7 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
 
     results: list[SecondaryRungResult] = []
     optimizer_forecasts: list[dict[str, object]] = []
+    reserve_forecasts: list[dict[str, object]] = []
     for table, value_column in SECONDARY_TARGETS:
         df = tables[table]
         event_date = df["event_time"].dt.date
@@ -155,6 +222,10 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
             if table == "feature_imbalance":
                 optimizer_forecasts.extend(
                     _optimizer_forecast_rows(test, forecasts["lgbm"])
+                )
+            if table in RESERVE_TARGETS:
+                reserve_forecasts.extend(
+                    _reserve_forecast_rows(table, test, forecasts["lgbm"])
                 )
 
             for rung, quantile_preds in forecasts.items():
@@ -232,7 +303,7 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
                     metrics["dm_pvalue"] = result.dm_pvalue
                 mlflow.log_metrics(metrics)
 
-    _persist_imbalance_forecasts(config, optimizer_forecasts)
+    _persist_optimizer_forecasts(config, optimizer_forecasts, reserve_forecasts)
     return results
 
 

@@ -96,7 +96,7 @@ def models() -> None:
 
 @app.command()
 def optimize() -> None:
-    """Optimize fixed day-ahead energy and causal T-60 imbalance recourse."""
+    """Optimize fixed D-1 energy, FCR capacity, and T-60 imbalance recourse."""
     from nordic_power_risk.optimize.run import run_energy_dispatch
 
     config = get_config()
@@ -109,7 +109,10 @@ def optimize() -> None:
         f"{result.table}: {result.row_count} rows, "
         f"objective={result.objective_eur:.2f} EUR; "
         f"{result.imbalance.table}: {result.imbalance.row_count} rows, "
-        f"objective={result.imbalance.objective_eur:.2f} EUR -> {config.duckdb_path}"
+        f"objective={result.imbalance.objective_eur:.2f} EUR; "
+        f"{result.reserve.table}: {result.reserve.row_count} rows, "
+        f"capacity-value={result.reserve.capacity_value_eur:.2f} EUR "
+        f"-> {config.duckdb_path}"
     )
 
 

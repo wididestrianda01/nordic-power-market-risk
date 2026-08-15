@@ -7,12 +7,17 @@ from nordic_power_risk.optimize.dispatch import (
     ImbalanceDispatchInput,
     ImbalanceInterval,
     ImbalanceResult,
+    ReserveForecast,
+    ReserveInterval,
+    ReserveResult,
     solve_energy_dispatch,
     solve_imbalance_dispatch,
+    solve_reserve_dispatch,
 )
 from nordic_power_risk.optimize.run import (
     DispatchRunResult,
     ImbalanceRunResult,
+    ReserveRunResult,
     run_energy_dispatch,
 )
 
@@ -25,7 +30,12 @@ __all__ = [
     "ImbalanceInterval",
     "ImbalanceResult",
     "ImbalanceRunResult",
+    "ReserveForecast",
+    "ReserveInterval",
+    "ReserveResult",
+    "ReserveRunResult",
     "run_energy_dispatch",
     "solve_energy_dispatch",
     "solve_imbalance_dispatch",
+    "solve_reserve_dispatch",
 ]

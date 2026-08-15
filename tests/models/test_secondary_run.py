@@ -130,7 +130,8 @@ def test_run_secondary_benchmark_reports_seasonal_naive_and_lgbm_with_dm_test(
         conn.close()
     assert "forecast_day_ahead" not in table_names
     assert {name for name in table_names if name.startswith("forecast_")} == {
-        "forecast_imbalance"
+        "forecast_imbalance",
+        "forecast_reserve",
     }
     assert list(forecasts.columns) == [
         "issue_time",
@@ -170,7 +171,7 @@ def test_optimizer_forecast_persistence_keeps_exact_lgbm_quantiles_and_unique_ke
     }
 
     rows = secondary_module._optimizer_forecast_rows(test, predictions)
-    secondary_module._persist_imbalance_forecasts(config, rows)
+    secondary_module._persist_optimizer_forecasts(config, rows, [])
     conn = get_connection(config.duckdb_path)
     try:
         forecasts = conn.execute("SELECT * FROM forecast_imbalance").fetchdf()
@@ -237,12 +238,11 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
         "_forecast_seasonal_naive",
         lambda train, test, value_column: sentinel(test, 10.0),
     )
+    lgbm_bases = iter([31.0, 32.0, 33.0, 20.0])
     monkeypatch.setattr(
         secondary_module,
         "lgbm_quantile_forecast",
-        lambda train, test, value_column: sentinel(
-            test, 20.0 if value_column == "imbalance_price_eur_mwh" else 30.0
-        ),
+        lambda train, test, value_column: sentinel(test, next(lgbm_bases)),
     )
     monkeypatch.setattr(secondary_module.mlflow, "set_tracking_uri", lambda *_: None)
     monkeypatch.setattr(secondary_module.mlflow, "set_experiment", lambda *_: None)
@@ -255,6 +255,9 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
     conn = get_connection(config.duckdb_path)
     try:
         forecast = conn.execute("SELECT * FROM forecast_imbalance").fetchdf().iloc[0]
+        reserves = conn.execute(
+            "SELECT * FROM forecast_reserve ORDER BY product, direction"
+        ).fetchdf()
     finally:
         conn.close()
 
@@ -262,3 +265,71 @@ def test_secondary_benchmark_persists_lgbm_not_seasonal_imbalance_quantiles(
         [20.1, 20.5, 20.9]
     )
     assert forecast["q0_5"] != pytest.approx(10.5)
+    assert list(reserves.columns) == [
+        "product",
+        "direction",
+        "issue_time",
+        "delivery_time",
+        "q0_1",
+        "q0_5",
+        "q0_9",
+        "forecast_source",
+    ]
+    assert set(zip(reserves["product"], reserves["direction"], strict=True)) == {
+        ("FCR_D", "up"),
+        ("FCR_D", "down"),
+        ("FCR_N", "symmetric"),
+    }
+    assert reserves["forecast_source"].eq("lgbm").all()
+    expected_quantiles = {
+        ("FCR_D", "up"): [31.1, 31.5, 31.9],
+        ("FCR_D", "down"): [32.1, 32.5, 32.9],
+        ("FCR_N", "symmetric"): [33.1, 33.5, 33.9],
+    }
+    for row in reserves.itertuples(index=False):
+        assert [row.q0_1, row.q0_5, row.q0_9] == pytest.approx(
+            expected_quantiles[(row.product, row.direction)]
+        )
+
+
+@pytest.mark.parametrize("preexisting", [False, True], ids=["empty", "replace"])
+def test_optimizer_forecast_tables_replace_atomically(
+    tmp_path, monkeypatch, preexisting: bool
+) -> None:  # type: ignore[no-untyped-def]
+    start, end = date(2024, 1, 1), date(2025, 6, 1)
+    config = _make_config(tmp_path, start, end)
+    _seed(config, start, end)
+    build_all_facts(config)
+    build_secondary_features(config)
+    conn = get_connection(config.duckdb_path)
+    try:
+        if preexisting:
+            write_table(conn, "forecast_imbalance", [{"sentinel": "old-imbalance"}])
+            write_table(conn, "forecast_reserve", [{"sentinel": "old-reserve"}])
+    finally:
+        conn.close()
+    real_write = secondary_module.write_table
+
+    def fail_reserve(conn, table, rows, columns=None):  # type: ignore[no-untyped-def]
+        if table == "forecast_reserve":
+            raise RuntimeError("reserve forecast write failed")
+        return real_write(conn, table, rows, columns=columns)
+
+    monkeypatch.setattr(secondary_module, "write_table", fail_reserve)
+    with pytest.raises(RuntimeError, match="reserve forecast write failed"):
+        run_secondary_benchmark(config)
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        names = {
+            row[0] for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'forecast_%'"
+            ).fetchall()
+        }
+        if preexisting:
+            assert conn.execute("SELECT * FROM forecast_imbalance").fetchall() == [("old-imbalance",)]
+            assert conn.execute("SELECT * FROM forecast_reserve").fetchall() == [("old-reserve",)]
+        else:
+            assert names == set()
+    finally:
+        conn.close()
