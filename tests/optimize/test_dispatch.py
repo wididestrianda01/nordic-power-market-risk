@@ -404,17 +404,24 @@ def test_imbalance_recourse_preserves_awarded_reserve_headroom() -> None:
 def test_reserve_optimizer_public_api_is_exported() -> None:
     from nordic_power_risk.optimize import (
         ReserveForecast,
+        ReserveHeadroom,
         ReserveInterval,
         ReserveResult,
         ReserveRunResult,
+        solve_balancing_reserve_dispatch,
         solve_reserve_dispatch,
     )
 
     assert ReserveForecast is dispatch.ReserveForecast
+    assert ReserveHeadroom is dispatch.ReserveHeadroom
     assert ReserveInterval is dispatch.ReserveInterval
     assert ReserveResult is dispatch.ReserveResult
     assert ReserveRunResult.__name__ == "ReserveRunResult"
     assert solve_reserve_dispatch is dispatch.solve_reserve_dispatch
+    assert (
+        solve_balancing_reserve_dispatch
+        is dispatch.solve_balancing_reserve_dispatch
+    )
 
 
 def test_fcr_mechanics_use_named_constants() -> None:
@@ -649,3 +656,151 @@ def test_negative_recourse_preserves_down_power_and_maximum_soc() -> None:
     assert interval.actual_charge_mw == pytest.approx(0.2)
     assert interval.actual_discharge_mw == pytest.approx(0.0)
     assert interval.soc_mwh == pytest.approx(maximum_soc)
+
+
+def _balancing_forecast(
+    product: str,
+    direction: str,
+    price: float = 100.0,
+    *,
+    delivery_time: datetime = datetime(2025, 1, 2),
+    issue_offset: timedelta = timedelta(),
+) -> dispatch.ReserveForecast:
+    exact_issue = datetime(2025, 1, 1, 6)
+    return dispatch.ReserveForecast(
+        product=product,
+        direction=direction,
+        issue_time=exact_issue + issue_offset,
+        delivery_time=delivery_time,
+        forecast_value_eur_mw_h=price,
+    )
+
+
+def test_balancing_capacity_is_binary_exclusive_and_negative_price_stays_zero() -> None:
+    forecasts = [
+        _balancing_forecast("AFRR", "down", 90.0),
+        _balancing_forecast("MFRR", "up", 100.0),
+        _balancing_forecast("MFRR", "down", -1.0),
+    ]
+
+    result = dispatch.solve_balancing_reserve_dispatch(
+        forecasts,
+        DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0),
+    )
+
+    awarded = [row for row in result.intervals if row.capacity_mw > 1e-8]
+    assert [(row.product, row.direction, row.capacity_mw) for row in awarded] == [
+        ("MFRR", "up", 1.0)
+    ]
+    assert next(row for row in result.intervals if row.direction == "down" and row.product == "MFRR").capacity_mw == 0.0
+
+
+@pytest.mark.parametrize(
+    ("product", "direction", "hours", "initial_soc"),
+    [
+        ("AFRR", "up", 1.0, 1.2),
+        ("AFRR", "down", 1.0, 0.8),
+        ("MFRR", "up", 0.5, 0.8),
+        ("MFRR", "down", 0.5, 1.0),
+    ],
+)
+def test_balancing_endurance_and_efficiency_bind_both_soc_boundaries(
+    product: str, direction: str, hours: float, initial_soc: float,
+) -> None:
+    config = DispatchConfig(
+        initial_soc_mwh=initial_soc, terminal_value_eur_mwh=0.0
+    )
+
+    interval = dispatch.solve_balancing_reserve_dispatch(
+        [_balancing_forecast(product, direction)], config
+    ).intervals[0]
+
+    assert interval.capacity_mw == pytest.approx(1.0)
+    if direction == "up":
+        assert interval.minimum_soc_mwh == pytest.approx(
+            hours / config.one_way_efficiency
+        )
+        assert interval.maximum_soc_mwh == pytest.approx(
+            config.energy_capacity_mwh
+        )
+    else:
+        assert interval.minimum_soc_mwh == pytest.approx(0.0)
+        assert interval.maximum_soc_mwh == pytest.approx(
+            config.energy_capacity_mwh - config.one_way_efficiency * hours
+        )
+
+
+def test_balancing_gate_is_exact_and_dst_aware() -> None:
+    delivery_time = datetime(2025, 7, 1)
+    exact = dispatch.ReserveForecast(
+        product="MFRR",
+        direction="up",
+        issue_time=datetime(2025, 6, 30, 5),
+        delivery_time=delivery_time,
+        forecast_value_eur_mw_h=10.0,
+    )
+
+    result = dispatch.solve_balancing_reserve_dispatch(
+        [
+            exact,
+            dispatch.ReserveForecast(
+                product="AFRR",
+                direction="down",
+                issue_time=datetime(2025, 6, 30, 4, 59),
+                delivery_time=delivery_time,
+                forecast_value_eur_mw_h=10_000.0,
+            ),
+        ],
+        DispatchConfig(terminal_value_eur_mwh=0.0),
+    )
+
+    assert [(row.product, row.direction) for row in result.intervals] == [
+        ("MFRR", "up")
+    ]
+
+
+def test_balancing_rejects_ffr() -> None:
+    with pytest.raises(ValueError, match="unsupported balancing"):
+        dispatch.solve_balancing_reserve_dispatch(
+            [_balancing_forecast("FFR", "up")],
+            DispatchConfig(terminal_value_eur_mwh=0.0),
+        )
+
+
+def test_early_balancing_award_constrains_later_day_ahead_energy() -> None:
+    delivery_time = datetime(2025, 1, 2)
+    config = DispatchConfig(initial_soc_mwh=1.2, terminal_value_eur_mwh=0.0)
+    headroom = dispatch.ReserveHeadroom(
+        reserved_up_mw=1.0,
+        reserved_down_mw=0.0,
+        minimum_soc_mwh=1.0 / config.one_way_efficiency,
+        maximum_soc_mwh=config.energy_capacity_mwh,
+    )
+
+    interval = dispatch.solve_energy_dispatch(
+        [DispatchForecast(ISSUE_TIME, delivery_time, 1_000.0)],
+        config,
+        reserve_headroom={delivery_time: headroom},
+    ).intervals[0]
+
+    assert interval.discharge_mw == pytest.approx(0.0)
+    assert interval.soc_mwh >= headroom.minimum_soc_mwh
+
+
+def test_later_fcr_is_exclusive_with_early_balancing_award() -> None:
+    config = DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
+    prior = dispatch.ReserveHeadroom(
+        reserved_up_mw=1.0,
+        reserved_down_mw=0.0,
+        minimum_soc_mwh=0.5 / config.one_way_efficiency,
+        maximum_soc_mwh=config.energy_capacity_mwh,
+    )
+
+    interval = dispatch.solve_reserve_dispatch(
+        [_reserve_forecast("FCR_D", "down", 10_000.0)],
+        _energy_interval(),
+        config,
+        prior_reserve=prior,
+    ).intervals[0]
+
+    assert interval.capacity_mw == pytest.approx(0.0)

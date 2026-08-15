@@ -66,8 +66,12 @@ def features() -> None:
 
 @app.command()
 def models() -> None:
-    """Naive/seasonal-naive/LEAR/DNN benchmark ladder over T08 rolling-origin folds (Phase 2)."""
+    """Build primary, secondary, and tertiary market forecasts."""
     from nordic_power_risk.models.run import run_benchmark_ladder, select_best_rung
+    from nordic_power_risk.models.secondary_run import (
+        run_secondary_benchmark,
+        run_tertiary_forecast,
+    )
 
     config = get_config()
     results = run_benchmark_ladder(config)
@@ -93,10 +97,26 @@ def models() -> None:
     best = select_best_rung(results)
     typer.echo(f"promoted: {best.rung} (pinball={best.pinball_loss:.4f})")
 
+    secondary_results = run_secondary_benchmark(config)
+    for result in secondary_results:
+        typer.echo(
+            f"{result.target}/{result.rung} (n={result.n_obs}): "
+            f"pinball={result.pinball_loss:.4f} crps={result.crps:.4f} "
+            f"coverage_80={result.coverage_80:.3f} "
+            f"winkler_80={result.winkler_80:.4f} pit_mean={result.pit_mean:.3f}"
+        )
+
+    tertiary_results = run_tertiary_forecast(config)
+    for result in tertiary_results:
+        typer.echo(
+            f"{result.target}/{result.source} (n={result.n_obs}): "
+            f"mae={result.mae:.4f}"
+        )
+
 
 @app.command()
 def optimize() -> None:
-    """Optimize fixed D-1 energy, FCR capacity, and T-60 imbalance recourse."""
+    """Optimize 07:00 balancing, 10:00 energy, 17:30 FCR, then T-60 imbalance."""
     from nordic_power_risk.optimize.run import run_energy_dispatch
 
     config = get_config()

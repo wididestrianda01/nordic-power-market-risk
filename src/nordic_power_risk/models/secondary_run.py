@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from nordic_power_risk.config import PipelineConfig
+from nordic_power_risk.facts.rules import afrr_mfrr_capacity_issue_time
 from nordic_power_risk.features.split import rolling_origin_folds
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 from nordic_power_risk.models.baselines import (
@@ -54,6 +55,12 @@ RESERVE_TARGETS = {
     "feature_fcr_d_down": ("FCR_D", "down"),
     "feature_fcr_n": ("FCR_N", "symmetric"),
 }
+TERTIARY_TARGETS = {
+    "feature_afrr_up": ("AFRR", "up"),
+    "feature_afrr_down": ("AFRR", "down"),
+    "feature_mfrr_up": ("MFRR", "up"),
+    "feature_mfrr_down": ("MFRR", "down"),
+}
 RESERVE_FORECAST_COLUMNS = {
     "product": "VARCHAR",
     "direction": "VARCHAR",
@@ -78,6 +85,14 @@ class SecondaryRungResult:
     pit_mean: float
     dm_stat: float | None
     dm_pvalue: float | None
+
+
+@dataclass(frozen=True)
+class TertiaryForecastResult:
+    target: str
+    source: str
+    n_obs: int
+    mae: float
 
 
 def _forecast_seasonal_naive(
@@ -167,6 +182,10 @@ def _persist_optimizer_forecasts(
     reserve_rows: list[dict[str, object]],
 ) -> None:
     conn = get_connection(config.duckdb_path)
+    reserve_rows.extend(
+        row for row in _existing_reserves(conn)
+        if row.get("product") in {"AFRR", "MFRR"}
+    )
     conn.execute("BEGIN TRANSACTION")
     try:
         _write_optimizer_forecasts(conn, imbalance_rows, reserve_rows)
@@ -175,6 +194,98 @@ def _persist_optimizer_forecasts(
         raise
     else:
         conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+
+def _tertiary_rows(
+    table: str, frame: pd.DataFrame
+) -> tuple[list[dict[str, object]], TertiaryForecastResult]:
+    required = {"event_time", "price", "price_lag_168h"}
+    if not required.issubset(frame.columns):
+        raise ValueError(f"{table} is missing event_time, price, or price_lag_168h")
+    if frame["event_time"].duplicated().any():
+        raise ValueError(f"{table} contains duplicate delivery_time")
+    valid = frame["price_lag_168h"].notna()
+    product, direction = TERTIARY_TARGETS[table]
+    rows = [
+        {
+            "product": product,
+            "direction": direction,
+            "issue_time": afrr_mfrr_capacity_issue_time(
+                frame.at[index, "event_time"].to_pydatetime()
+            ),
+            "delivery_time": frame.at[index, "event_time"],
+            "q0_1": None,
+            "q0_5": float(frame.at[index, "price_lag_168h"]),
+            "q0_9": None,
+            "forecast_source": "seasonal_naive",
+        }
+        for index in frame.index[valid]
+    ]
+    errors = (
+        frame.loc[valid, "price"].astype(float)
+        - frame.loc[valid, "price_lag_168h"].astype(float)
+    ).abs()
+    return rows, TertiaryForecastResult(
+        target=table,
+        source="seasonal_naive",
+        n_obs=len(rows),
+        mae=float(errors.mean()) if len(errors) else float("nan"),
+    )
+
+
+def _existing_reserves(conn: object) -> list[dict[str, object]]:
+    exists = conn.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name = 'forecast_reserve'"
+    ).fetchone()[0]
+    if not exists:
+        return []
+    cursor = conn.execute("SELECT * FROM forecast_reserve")
+    columns = [item[0] for item in cursor.description]
+    return [dict(zip(columns, values, strict=True)) for values in cursor.fetchall()]
+
+
+def _existing_non_tertiary_reserves(conn: object) -> list[dict[str, object]]:
+    return [
+        row for row in _existing_reserves(conn)
+        if row.get("product") not in {"AFRR", "MFRR"}
+    ]
+
+
+def _write_tertiary_forecasts(
+    conn: object, rows: list[dict[str, object]]
+) -> None:
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        write_table(
+            conn, "forecast_reserve", _unique_reserve_forecasts(rows),
+            columns=RESERVE_FORECAST_COLUMNS,
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+
+
+def run_tertiary_forecast(
+    config: PipelineConfig,
+) -> list[TertiaryForecastResult]:
+    """Persist point-only seasonal-naive aFRR/mFRR forecasts at the exact gate."""
+    conn = get_connection(config.duckdb_path)
+    try:
+        existing = _existing_non_tertiary_reserves(conn)
+        rows = existing
+        results: list[TertiaryForecastResult] = []
+        for table in TERTIARY_TARGETS:
+            frame = conn.execute(f"SELECT * FROM {table}").fetchdf()
+            table_rows, result = _tertiary_rows(table, frame)
+            rows.extend(table_rows)
+            results.append(result)
+        _write_tertiary_forecasts(conn, rows)
+        return results
     finally:
         conn.close()
 
@@ -307,4 +418,11 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
     return results
 
 
-__all__ = ["SECONDARY_TARGETS", "SecondaryRungResult", "run_secondary_benchmark"]
+__all__ = [
+    "SECONDARY_TARGETS",
+    "TERTIARY_TARGETS",
+    "SecondaryRungResult",
+    "TertiaryForecastResult",
+    "run_secondary_benchmark",
+    "run_tertiary_forecast",
+]

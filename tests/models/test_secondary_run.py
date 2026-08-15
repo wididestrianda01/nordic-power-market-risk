@@ -333,3 +333,164 @@ def test_optimizer_forecast_tables_replace_atomically(
             assert names == set()
     finally:
         conn.close()
+
+
+
+def _tertiary_feature_rows(
+    event_time: datetime, point: float
+) -> list[dict[str, object]]:
+    return [{
+        "event_time": event_time,
+        "issue_time": event_time,
+        "price": point + 999.0,
+        "price_lag_168h": point,
+    }]
+
+
+def test_tertiary_forecasts_persist_point_only_product_mapping_and_exact_gate(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _make_config(tmp_path, date(2025, 6, 1), date(2025, 8, 1))
+    event_time = datetime(2025, 7, 1)
+    expected = {
+        "feature_afrr_up": ("AFRR", "up", 11.0),
+        "feature_afrr_down": ("AFRR", "down", 12.0),
+        "feature_mfrr_up": ("MFRR", "up", 13.0),
+        "feature_mfrr_down": ("MFRR", "down", 14.0),
+    }
+    conn = get_connection(config.duckdb_path)
+    try:
+        for table, (_, _, point) in expected.items():
+            write_table(conn, table, _tertiary_feature_rows(event_time, point))
+    finally:
+        conn.close()
+
+    results = secondary_module.run_tertiary_forecast(config)
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM forecast_reserve ORDER BY product, direction"
+        ).fetchdf()
+    finally:
+        conn.close()
+    assert {(item.target, item.source) for item in results} == {
+        (table, "seasonal_naive") for table in expected
+    }
+    assert set(zip(rows["product"], rows["direction"], strict=True)) == {
+        (product, direction) for product, direction, _ in expected.values()
+    }
+    assert rows["forecast_source"].eq("seasonal_naive").all()
+    assert rows[["q0_1", "q0_9"]].isna().all().all()
+    assert dict(
+        zip(
+            zip(rows["product"], rows["direction"], strict=True),
+            rows["q0_5"],
+            strict=True,
+        )
+    ) == {
+        (product, direction): point
+        for product, direction, point in expected.values()
+    }
+    assert rows["issue_time"].eq(datetime(2025, 6, 30, 5)).all()
+
+
+def test_tertiary_forecast_rejects_duplicate_delivery_before_persistence(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _make_config(tmp_path, date(2025, 1, 1), date(2025, 2, 1))
+    event_time = datetime(2025, 1, 15)
+    conn = get_connection(config.duckdb_path)
+    try:
+        for table in secondary_module.TERTIARY_TARGETS:
+            rows = _tertiary_feature_rows(event_time, 10.0)
+            if table == "feature_afrr_up":
+                rows *= 2
+            write_table(conn, table, rows)
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError, match="duplicate"):
+        secondary_module.run_tertiary_forecast(config)
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        names = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name = 'forecast_reserve'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert names == []
+
+
+def test_tertiary_forecast_replace_rolls_back_atomically(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = _make_config(tmp_path, date(2025, 1, 1), date(2025, 2, 1))
+    event_time = datetime(2025, 1, 15)
+    old = {
+        "product": "FCR_D", "direction": "up",
+        "issue_time": datetime(2025, 1, 14, 16, 30),
+        "delivery_time": event_time, "q0_1": 1.0, "q0_5": 2.0, "q0_9": 3.0,
+        "forecast_source": "lgbm",
+    }
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(conn, "forecast_reserve", [old])
+        for table in secondary_module.TERTIARY_TARGETS:
+            write_table(conn, table, _tertiary_feature_rows(event_time, 10.0))
+    finally:
+        conn.close()
+    real_write = secondary_module.write_table
+
+    def fail_write(conn, table, rows, columns=None):  # type: ignore[no-untyped-def]
+        real_write(conn, table, rows, columns=columns)
+        raise RuntimeError("tertiary write failed")
+
+    monkeypatch.setattr(secondary_module, "write_table", fail_write)
+    with pytest.raises(RuntimeError, match="tertiary write failed"):
+        secondary_module.run_tertiary_forecast(config)
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        assert conn.execute("SELECT * FROM forecast_reserve").fetchall() == [
+            tuple(old.values())
+        ]
+    finally:
+        conn.close()
+
+
+def test_secondary_forecast_refresh_preserves_normalized_tertiary_rows(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _make_config(tmp_path, date(2025, 1, 1), date(2025, 2, 1))
+    event_time = datetime(2025, 1, 15)
+    tertiary = {
+        "product": "AFRR", "direction": "up",
+        "issue_time": datetime(2025, 1, 14, 6),
+        "delivery_time": event_time, "q0_1": None, "q0_5": 5.0, "q0_9": None,
+        "forecast_source": "seasonal_naive",
+    }
+    fcr = {
+        "product": "FCR_D", "direction": "up",
+        "issue_time": datetime(2025, 1, 14, 16, 30),
+        "delivery_time": event_time, "q0_1": 1.0, "q0_5": 2.0, "q0_9": 3.0,
+        "forecast_source": "lgbm",
+    }
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(conn, "forecast_reserve", [tertiary])
+    finally:
+        conn.close()
+
+    secondary_module._persist_optimizer_forecasts(config, [], [fcr])
+
+    conn = get_connection(config.duckdb_path)
+    try:
+        rows = conn.execute(
+            "SELECT product, forecast_source FROM forecast_reserve ORDER BY product"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [("AFRR", "seasonal_naive"), ("FCR_D", "lgbm")]

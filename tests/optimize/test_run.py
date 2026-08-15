@@ -1028,3 +1028,172 @@ def test_optimize_cli_fails_for_invalid_reserve_source(tmp_path, monkeypatch) ->
     assert result.exit_code == 1
     assert "forecast_source" in result.output
     assert _dispatch_table_names(config) == set()
+
+
+def _balancing_row(
+    delivery_time: datetime,
+    *,
+    product: str = "MFRR",
+    direction: str = "up",
+    price: object = 100.0,
+    issue_offset: timedelta = timedelta(),
+    source: str = "seasonal_naive",
+    **extra: object,
+) -> dict[str, object]:
+    issue_time = (
+        datetime.combine(
+            delivery_time.replace(tzinfo=UTC).astimezone(STOCKHOLM).date()
+            - timedelta(days=1),
+            time(7),
+            tzinfo=STOCKHOLM,
+        )
+        .astimezone(UTC)
+        .replace(tzinfo=None)
+        + issue_offset
+    )
+    return {
+        "product": product,
+        "direction": direction,
+        "issue_time": issue_time,
+        "delivery_time": delivery_time,
+        "q0_1": None,
+        "q0_5": price,
+        "q0_9": None,
+        "forecast_source": source,
+        **extra,
+    }
+
+
+def test_early_balancing_award_constrains_energy_fcr_and_imbalance(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(
+        tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
+    )
+    _write_forecasts(
+        config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 1_000.0)]
+    )
+    _write_imbalance_forecasts(
+        config,
+        [{
+            "issue_time": DELIVERY_TIME - timedelta(minutes=60),
+            "event_time": DELIVERY_TIME,
+            "q0_5": 1_000.0,
+        }],
+    )
+    _write_reserve_forecasts(
+        config,
+        [
+            _balancing_row(DELIVERY_TIME, price=100.0),
+            _reserve_row(DELIVERY_TIME, product="FCR_D", direction="down", price=10_000.0),
+        ],
+    )
+
+    run_energy_dispatch(config)
+    energy = _fetch_dispatch(config).iloc[0]
+    reserve = _fetch_reserve_dispatch(config)
+    imbalance = _fetch_imbalance_dispatch(config).iloc[0]
+
+    balancing = reserve[reserve["product"] == "MFRR"].iloc[0]
+    fcr = reserve[reserve["product"] == "FCR_D"].iloc[0]
+    assert balancing["capacity_mw"] == pytest.approx(1.0)
+    assert balancing["conditional_acceptance"]
+    assert energy["discharge_mw"] == pytest.approx(0.0)
+    assert fcr["capacity_mw"] == pytest.approx(0.0)
+    assert imbalance["reserved_up_mw"] == pytest.approx(1.0)
+    assert imbalance["actual_discharge_mw"] == pytest.approx(0.0)
+
+
+def test_balancing_award_does_not_use_day_ahead_or_later_prices(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    capacities = []
+    for name, day_ahead, fcr in (("low", -1_000.0, -1_000.0), ("high", 1_000.0, 1_000_000.0)):
+        config = _config(
+            tmp_path / name, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
+        )
+        _write_forecasts(
+            config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, day_ahead)]
+        )
+        _write_reserve_forecasts(
+            config,
+            [
+                _balancing_row(DELIVERY_TIME, price=100.0),
+                _reserve_row(DELIVERY_TIME, price=fcr),
+            ],
+        )
+        run_energy_dispatch(config)
+        rows = _fetch_reserve_dispatch(config)
+        capacities.append(rows.loc[rows["product"] == "MFRR", "capacity_mw"].iloc[0])
+
+    assert capacities == pytest.approx([1.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ([_balancing_row(DELIVERY_TIME, source="lgbm")], "seasonal_naive"),
+        (
+            [_balancing_row(DELIVERY_TIME), _balancing_row(DELIVERY_TIME)],
+            "duplicate",
+        ),
+        ([_balancing_row(DELIVERY_TIME, product="FFR")], "unsupported balancing"),
+    ],
+    ids=["wrong-source", "duplicate", "ffr"],
+)
+def test_invalid_balancing_inputs_fail_before_atomic_persistence(
+    tmp_path, rows: list[dict[str, object]], message: str
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    _write_reserve_forecasts(config, rows)
+
+    with pytest.raises(ValueError, match=message):
+        run_energy_dispatch(config)
+
+    assert _dispatch_table_names(config) == set()
+
+
+def test_optimize_cli_reports_balancing_capacity_value(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(
+        tmp_path, initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0
+    )
+    _write_forecasts(config, [_forecast_row(ISSUE_TIME, DELIVERY_TIME, 0.0)])
+    _write_reserve_forecasts(config, [_balancing_row(DELIVERY_TIME, price=75.0)])
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+
+    result = runner.invoke(app, ["optimize"])
+
+    assert result.exit_code == 0
+    assert "dispatch_reserve: 1 rows" in result.output
+    assert "capacity-value=75.00 EUR" in result.output
+
+
+def test_next_balancing_gate_uses_soc_carried_from_prior_energy_decision(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(
+        tmp_path,
+        horizon_days=1,
+        initial_soc_mwh=0.0,
+        terminal_value_eur_mwh=0.0,
+    )
+    next_issue = datetime(2025, 1, 2, 9)
+    next_delivery = datetime(2025, 1, 3)
+    _write_forecasts(
+        config,
+        [
+            _forecast_row(ISSUE_TIME, DELIVERY_TIME, -1_000.0),
+            _forecast_row(ISSUE_TIME, DELIVERY_TIME + timedelta(hours=1), -1_000.0),
+            _forecast_row(next_issue, next_delivery, 0.0),
+        ],
+    )
+    _write_reserve_forecasts(
+        config,
+        [_balancing_row(next_delivery, product="AFRR", direction="up")],
+    )
+
+    run_energy_dispatch(config)
+
+    energy = _fetch_dispatch(config)
+    reserve = _fetch_reserve_dispatch(config).iloc[0]
+    assert energy[energy["delivery_time"] < next_delivery].iloc[-1]["soc_mwh"] > (
+        1.0 / config.optimizer.one_way_efficiency
+    )
+    assert reserve["capacity_mw"] == pytest.approx(1.0)

@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -115,3 +116,69 @@ def test_ingest_without_token_exits_nonzero(monkeypatch):
     result = runner.invoke(app, ["ingest"])
     assert result.exit_code == 1
     assert "ENTSOE_API_TOKEN" in result.output
+
+
+def test_models_runs_primary_secondary_and_tertiary_forecasts(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from nordic_power_risk.models import run as primary_module
+    from nordic_power_risk.models import secondary_run
+
+    config = object()
+    calls: list[str] = []
+    primary = SimpleNamespace(
+        rung="naive",
+        n_obs=2,
+        pinball_loss=1.0,
+        crps=2.0,
+        coverage_80=0.8,
+        winkler_80=3.0,
+        pit_mean=0.5,
+        dm_stat=None,
+        dm_pvalue=None,
+        dm_stat_vs_seasonal_naive=None,
+        dm_pvalue_vs_seasonal_naive=None,
+    )
+    secondary = SimpleNamespace(
+        target="imbalance",
+        rung="seasonal_naive",
+        n_obs=2,
+        pinball_loss=1.5,
+        crps=2.5,
+        coverage_80=0.8,
+        winkler_80=3.5,
+        pit_mean=0.5,
+        dm_stat=None,
+        dm_pvalue=None,
+    )
+    tertiary = SimpleNamespace(
+        target="afrr_up",
+        source="seasonal_naive",
+        n_obs=2,
+        mae=4.0,
+    )
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+    monkeypatch.setattr(
+        primary_module,
+        "run_benchmark_ladder",
+        lambda actual: calls.append("primary") or [primary],
+    )
+    monkeypatch.setattr(primary_module, "select_best_rung", lambda results: primary)
+    monkeypatch.setattr(
+        secondary_run,
+        "run_secondary_benchmark",
+        lambda actual: calls.append("secondary") or [secondary],
+    )
+    monkeypatch.setattr(
+        secondary_run,
+        "run_tertiary_forecast",
+        lambda actual: calls.append("tertiary") or [tertiary],
+    )
+
+    result = runner.invoke(app, ["models"])
+
+    assert result.exit_code == 0
+    assert calls == ["primary", "secondary", "tertiary"]
+    assert "promoted: naive" in result.output
+    assert "imbalance/seasonal_naive" in result.output
+    assert "afrr_up/seasonal_naive" in result.output
