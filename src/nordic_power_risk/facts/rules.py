@@ -16,6 +16,11 @@ _UTC = ZoneInfo("UTC")
 IMBALANCE_ESTIMATED_LAG = timedelta(minutes=30)
 IMBALANCE_FINAL_LAG = timedelta(minutes=45)
 
+# Imbalance price *forecast* decision cutoff (T09 secondary target), distinct from the
+# settlement lags above: mFRR energy is activated close to real time, so the forecast
+# must be issued 60min before delivery -- a fixed real-time lag, not a local-clock gate.
+IMBALANCE_FORECAST_LEAD = timedelta(minutes=60)
+
 
 def _local_cutoff(event_time_utc: datetime, cutoff: time) -> datetime:
     """`cutoff` local Stockholm time, day before event_time's local delivery date, as naive UTC."""
@@ -48,10 +53,17 @@ def afrr_mfrr_capacity_issue_time(event_time_utc: datetime) -> datetime:
     return _local_cutoff(event_time_utc, time(7, 0))
 
 
+def imbalance_forecast_issue_time(event_time_utc: datetime) -> datetime:
+    """Imbalance price forecast: issues T-60min per mFRR energy activation timing."""
+    return event_time_utc - IMBALANCE_FORECAST_LEAD
+
+
 __all__ = [
     "IMBALANCE_ESTIMATED_LAG",
     "IMBALANCE_FINAL_LAG",
+    "IMBALANCE_FORECAST_LEAD",
     "afrr_mfrr_capacity_issue_time",
     "day_ahead_issue_time",
     "fcr_capacity_issue_time",
+    "imbalance_forecast_issue_time",
 ]

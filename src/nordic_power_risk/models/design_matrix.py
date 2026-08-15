@@ -19,8 +19,12 @@ def missing_mask(df: pd.DataFrame, columns: tuple[str, ...] = NUMERIC_FEATURES) 
     return df[list(columns)].isna().any(axis=1)
 
 
-def build_design_matrix(df: pd.DataFrame, columns: pd.Index | None = None) -> pd.DataFrame:
-    numeric = df[list(NUMERIC_FEATURES)].astype(float)
+def build_design_matrix(
+    df: pd.DataFrame,
+    columns: pd.Index | None = None,
+    numeric_features: tuple[str, ...] = NUMERIC_FEATURES,
+) -> pd.DataFrame:
+    numeric = df[list(numeric_features)].astype(float)
     categorical = pd.get_dummies(
         df[list(CATEGORICAL_FEATURES)].astype("category"), prefix=list(CATEGORICAL_FEATURES)
     )

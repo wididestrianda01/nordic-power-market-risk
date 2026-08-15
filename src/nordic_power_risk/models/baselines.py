@@ -19,6 +19,11 @@ def seasonal_naive_forecast(features: pd.DataFrame) -> pd.Series:
     return features["price_lag_168h"]
 
 
+def seasonal_naive_forecast_for(features: pd.DataFrame, value_column: str) -> pd.Series:
+    """Weekly persistence for an arbitrary target column (secondary targets)."""
+    return features[f"{value_column}_lag_168h"]
+
+
 def residual_quantiles(
     actual: pd.Series, point_forecast: pd.Series, quantile_grid: tuple[float, ...] = QUANTILE_GRID
 ) -> dict[float, float]:
@@ -37,4 +42,5 @@ __all__ = [
     "quantile_forecast",
     "residual_quantiles",
     "seasonal_naive_forecast",
+    "seasonal_naive_forecast_for",
 ]

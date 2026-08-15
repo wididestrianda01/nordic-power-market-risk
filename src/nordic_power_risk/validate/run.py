@@ -9,7 +9,11 @@ from pandera.errors import SchemaErrors
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.ingest.duckdb_io import get_connection
-from nordic_power_risk.validate.schemas import RAW_TABLE_VALUE_COLUMNS, build_schema
+from nordic_power_risk.validate.schemas import (
+    RAW_TABLE_TIMESTAMP_COLUMNS,
+    RAW_TABLE_VALUE_COLUMNS,
+    build_schema,
+)
 
 SUPPORTED_ZONE = "SE3"
 
@@ -34,10 +38,11 @@ def validate_all(config: PipelineConfig) -> list[TableValidationResult]:
     try:
         for table in RAW_TABLE_VALUE_COLUMNS:
             df = conn.execute(f"SELECT * FROM {table}").fetchdf()
+            source_column = RAW_TABLE_TIMESTAMP_COLUMNS.get(table, "timestamp")
             if table in _EPOCH_MS_TABLES:
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+                df[source_column] = pd.to_datetime(df[source_column], unit="ms")
             else:
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df[source_column] = pd.to_datetime(df[source_column])
             schema = build_schema(table, window.start, window.end)
             try:
                 schema.validate(df, lazy=True)

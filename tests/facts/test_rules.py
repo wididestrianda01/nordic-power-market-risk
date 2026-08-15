@@ -4,6 +4,7 @@ from nordic_power_risk.facts.rules import (
     afrr_mfrr_capacity_issue_time,
     day_ahead_issue_time,
     fcr_capacity_issue_time,
+    imbalance_forecast_issue_time,
 )
 
 
@@ -37,4 +38,14 @@ def test_all_svk_issue_times_precede_event_time() -> None:
     event_time = datetime(2024, 6, 1, 12, 0, 0)
     assert day_ahead_issue_time(event_time) < event_time
     assert fcr_capacity_issue_time(event_time) < event_time
+
+
+def test_imbalance_forecast_issue_time_is_60min_before_event() -> None:
+    event_time = datetime(2024, 6, 1, 12, 0, 0)
+    assert imbalance_forecast_issue_time(event_time) == datetime(2024, 6, 1, 11, 0, 0)
+
+
+def test_imbalance_forecast_issue_time_precedes_event_time() -> None:
+    event_time = datetime(2024, 6, 1, 12, 0, 0)
+    assert imbalance_forecast_issue_time(event_time) < event_time
     assert afrr_mfrr_capacity_issue_time(event_time) < event_time
