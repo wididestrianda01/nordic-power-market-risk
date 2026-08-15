@@ -21,7 +21,28 @@ SAMPLE_JSON = json.dumps(
 def test_fetch_resource_calls_ckan_datastore_search():
     responses.add(responses.GET, BASE_URL, body=SAMPLE_JSON, status=200)
     raw = fetch_resource("fcr_capacity")
-    assert raw == SAMPLE_JSON
+    assert parse_resource(raw) == [{"timestamp": "2020-01-01T00:00:00", "value": 12.3}]
+    assert responses.calls[0].request.params["resource_id"] == RESOURCE_IDS["fcr_capacity"]
+    assert responses.calls[0].request.params["offset"] == "0"
+
+
+@responses.activate
+def test_fetch_resource_paginates_until_all_records():
+    page1 = json.dumps(
+        {"result": {"total": 2, "records": [{"timestamp": "2020-01-01T00:00:00", "value": 1.0}]}}
+    ).encode()
+    page2 = json.dumps(
+        {"result": {"total": 2, "records": [{"timestamp": "2020-01-01T01:00:00", "value": 2.0}]}}
+    ).encode()
+    responses.add(responses.GET, BASE_URL, body=page1, status=200)
+    responses.add(responses.GET, BASE_URL, body=page2, status=200)
+    raw = fetch_resource("fcr_capacity", limit=1)
+    assert parse_resource(raw) == [
+        {"timestamp": "2020-01-01T00:00:00", "value": 1.0},
+        {"timestamp": "2020-01-01T01:00:00", "value": 2.0},
+    ]
+    assert len(responses.calls) == 2
+    assert responses.calls[1].request.params["offset"] == "1"
 
 
 def test_fetch_resource_unknown_series_raises_key_error():

@@ -24,13 +24,32 @@ RESOURCE_IDS = {
 }
 
 
-def fetch_resource(series: str, *, limit: int = 100_000, timeout: float = 30.0) -> bytes:
-    """Raw JSON response from the CKAN datastore_search endpoint for `series`."""
+def fetch_resource(series: str, *, limit: int = 32_000, timeout: float = 30.0) -> bytes:
+    """Raw combined JSON from the CKAN datastore_search endpoint for `series`.
+
+    CKAN caps datastore_search at 32000 rows per request, so paginate via `offset`
+    and return a single JSON payload with every record concatenated (the capacity
+    resources hold 100k-1.2M rows; a single request silently truncates them).
+    """
     resource_id = RESOURCE_IDS[series]
-    params: dict[str, str | int] = {"resource_id": resource_id, "limit": limit}
-    response = requests.get(BASE_URL, params=params, timeout=timeout)
-    response.raise_for_status()
-    return response.content
+    records: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        params: dict[str, str | int] = {
+            "resource_id": resource_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        response = requests.get(BASE_URL, params=params, timeout=timeout)
+        response.raise_for_status()
+        payload = json.loads(response.content)
+        batch = payload.get("result", {}).get("records", [])
+        total = payload.get("result", {}).get("total", len(batch))
+        records.extend(batch)
+        offset += len(batch)
+        if not batch or offset >= total:
+            break
+    return json.dumps({"result": {"records": records}}).encode()
 
 
 def parse_resource(raw: bytes) -> list[dict[str, Any]]:
