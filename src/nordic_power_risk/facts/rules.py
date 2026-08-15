@@ -56,6 +56,13 @@ def afrr_mfrr_capacity_issue_time(event_time_utc: datetime) -> datetime:
     return _local_cutoff(event_time_utc, time(7, 0))
 
 
+def reserve_volume_issue_time(product: str, event_time_utc: datetime) -> datetime:
+    """A75 procured reserve volumes are D-1 auction results (like capacity prices)."""
+    if product == "FCR_N":
+        return fcr_capacity_issue_time(event_time_utc)
+    return afrr_mfrr_capacity_issue_time(event_time_utc)
+
+
 def imbalance_forecast_issue_time(event_time_utc: datetime) -> datetime:
     """Imbalance price forecast: issues T-60min per mFRR energy activation timing."""
     return event_time_utc - IMBALANCE_FORECAST_LEAD
@@ -69,5 +76,5 @@ __all__ = [
     "afrr_mfrr_capacity_issue_time",
     "day_ahead_issue_time",
     "fcr_capacity_issue_time",
-    "imbalance_forecast_issue_time",
+    "reserve_volume_issue_time",
 ]

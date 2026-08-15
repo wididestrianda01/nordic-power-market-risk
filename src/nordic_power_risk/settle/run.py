@@ -16,6 +16,7 @@ from typing import Any
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.entsoe import ACTIVATION_PROCESS_TYPES
 
 SETTLEMENT_COLUMNS = {
     "delivery_time": "TIMESTAMP",
@@ -174,45 +175,60 @@ def _reserve_capacity_settlement(config: PipelineConfig) -> list[dict[str, Any]]
 
 
 def _reserve_activation_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
-    """Replay observed aggregate activation onto accepted capacity (documented approx).
+    """Allocate observed aggregate activation pro rata to the asset's accepted share.
 
-    The repo carries observed aggregate activation (fact_activation) but not the
-    market's total procured capacity, so the exact pro-rata share is not computable.
-    We approximate by activating the asset up to its accepted capacity whenever the
-    aggregate activation is non-zero, and settle the activated energy at the final
-    imbalance price. FCR-N symmetric activation nets to ~zero energy and is skipped;
-    aFRR/mFRR energy prices are a separate data family not in scope. FCR-D and FFR
-    activated energy are not published (T03) and are not ingested, so their accepted
-    capacity settles no activation energy.
+    The asset's accepted capacity is `dispatch_reserve.capacity_mw`; its share of the
+    zone's aggregate activation is that capacity divided by the total procured volume
+    for the same (product, direction) interval (fact_reserve_volume, ENTSO-E A75).
+    Activated energy is settled at the observed activated-balancing energy price
+    (fact_activation_price, ENTSO-E A84), falling back to the final imbalance price
+    when A84 is unavailable. FCR-N symmetric activation nets to ~zero and is skipped;
+    FCR-D and FFR activated energy are not published (T03) and settle no activation.
     """
     reserve_rows = _read_rows(config, "dispatch_reserve")
     activation: dict[tuple[datetime, str, str], float] = {}
     for row in _read_rows(config, "fact_activation"):
         key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
         activation[key] = _as_float(row["activated_mw"])
+    procured: dict[tuple[datetime, str, str], float] = {}
+    for row in _read_rows(config, "fact_reserve_volume"):
+        key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
+        procured[key] = _as_float(row["procured_mw"])
+    activation_prices: dict[tuple[datetime, str, str], float] = {}
+    for row in _read_rows(config, "fact_activation_price"):
+        key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
+        activation_prices[key] = _as_float(row["activation_price_eur_mwh"])
     final_prices: dict[datetime, float] = {}
     for row in _read_rows(config, "fact_imbalance_price"):
         if row["price_type"] == "final":
-            event_time = _as_datetime(row["event_time"])
-            final_prices[event_time] = _as_float(row["imbalance_price_eur_mwh"])
+            final_prices[_as_datetime(row["event_time"])] = _as_float(
+                row["imbalance_price_eur_mwh"]
+            )
 
     rows: list[dict[str, Any]] = []
     for interval in reserve_rows:
         if not interval.get("conditional_acceptance"):
             continue
         delivery = _as_datetime(interval["delivery_time"])
+        product = str(interval["product"])
         direction = str(interval["direction"])
-        if direction == "symmetric":
+        if direction == "symmetric" or product not in ACTIVATION_PROCESS_TYPES:
             continue
-        price = final_prices.get(delivery)
-        if price is None or not isfinite(price):
-            continue
-        aggregate = activation.get((delivery, str(interval["product"]), direction))
+        aggregate = activation.get((delivery, product, direction))
         if aggregate is None or not isfinite(aggregate) or aggregate <= 0:
             continue
+        total_procured = procured.get((delivery, product, direction))
+        if total_procured is None or not isfinite(total_procured) or total_procured <= 0:
+            continue  # fail-closed: no denominator -> no pro-rata share
         capacity = _as_float(interval["capacity_mw"])
         duration = _as_float(interval["duration_hours"])
-        energy = min(capacity, aggregate) * duration
+        share = min(capacity / total_procured, 1.0)
+        energy = share * aggregate * duration
+        price = activation_prices.get((delivery, product, direction))
+        if price is None or not isfinite(price):
+            price = final_prices.get(delivery)
+        if price is None or not isfinite(price):
+            continue
         sign = 1.0 if direction == "up" else -1.0
         rows.append(
             {

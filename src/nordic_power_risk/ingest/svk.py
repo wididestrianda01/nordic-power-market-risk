@@ -37,3 +37,55 @@ def parse_resource(raw: bytes) -> list[dict[str, Any]]:
     result = payload.get("result", {})
     records = result.get("records", [])
     return [dict(record) for record in records]
+
+
+# Activated balancing energy (60-min, discontinued 2025-03-04) — the only public
+# aggregate activation VOLUME source for Swedish bidding zones. mFRR is absent
+# (never published by SvK); aFRR, FCR-N and FCR-D activation are here.
+ACTIVATION_RESOURCE_IDS = {
+    "afrr": "f40313df-c68c-420a-a655-1ea8ffda2859",
+    "fcr": "c0a75ee4-2cf3-43f2-9168-2c8627aef0ef",
+}
+
+# SvK reserve_product -> canonical product code used across the pipeline.
+_ACTIVATION_PRODUCTS = {
+    "aFRRCapacityMarket": "AFRR",
+    "FCRN": "FCR_N",
+    "FCRD": "FCR_D",
+}
+
+
+def fetch_activated_energy(series: str, *, limit: int = 100_000, timeout: float = 30.0) -> bytes:
+    """Raw JSON for SvK activated balancing energy (`afrr` or `fcr`)."""
+    resource_id = ACTIVATION_RESOURCE_IDS[series]
+    params: dict[str, str | int] = {"resource_id": resource_id, "limit": limit}
+    response = requests.get(BASE_URL, params=params, timeout=timeout)
+    response.raise_for_status()
+    return response.content
+
+
+def parse_activated_energy(raw: bytes, zone: str) -> list[dict[str, Any]]:
+    """SvK activated-energy records -> raw_activation rows for `zone`.
+
+    `volume` is signed MWh over a 60-min interval (up > 0, down < 0); we store the
+    magnitude as `activated_mw` (numerically equal to average MW over that hour)
+    and keep `direction` for the sign.
+    """
+    payload = json.loads(raw)
+    records = payload.get("result", {}).get("records", [])
+    rows: list[dict[str, Any]] = []
+    for rec in records:
+        if rec.get("bidding_zone") != zone:
+            continue
+        product = _ACTIVATION_PRODUCTS.get(rec.get("reserve_product"))
+        if product is None:
+            continue
+        rows.append(
+            {
+                "timestamp": rec["start_time_utc"],
+                "product": product,
+                "direction": rec["reserve_direction"],
+                "activated_mw": abs(float(rec["volume"])),
+            }
+        )
+    return rows

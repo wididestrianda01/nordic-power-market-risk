@@ -62,6 +62,21 @@ def _seed_empty_reserve_tables(config: PipelineConfig) -> None:
                 "activated_mw": "DOUBLE",
             },
         )
+        for table, value_column in (
+            ("fact_activation_price", "activation_price_eur_mwh"),
+            ("fact_reserve_volume", "procured_mw"),
+        ):
+            write_table(
+                conn,
+                table,
+                [],
+                columns={
+                    "event_time": "TIMESTAMP",
+                    "product": "VARCHAR",
+                    "direction": "VARCHAR",
+                    value_column: "DOUBLE",
+                },
+            )
     finally:
         conn.close()
 
@@ -369,8 +384,11 @@ def test_reconcile_groups_settlement_into_components(tmp_path) -> None:  # type:
     assert "degradation" not in result.components
 
 
-def test_reserve_activation_replay_settles_at_imbalance_price(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_reserve_activation_allocates_pro_rata_and_settles_at_activation_price(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     config = _config(tmp_path)
+    _seed_empty_reserve_tables(config)
     conn = get_connection(config.duckdb_path)
     try:
         write_table(
@@ -393,6 +411,14 @@ def test_reserve_activation_replay_settles_at_imbalance_price(tmp_path) -> None:
                     "direction": "down",
                     "conditional_acceptance": True,
                 },
+                {
+                    "delivery_time": datetime(2025, 1, 1, 2),
+                    "duration_hours": 1.0,
+                    "capacity_mw": 0.5,
+                    "product": "MFRR",
+                    "direction": "up",
+                    "conditional_acceptance": True,
+                },
             ],
         )
         write_table(
@@ -400,11 +426,102 @@ def test_reserve_activation_replay_settles_at_imbalance_price(tmp_path) -> None:
             "fact_activation",
             [
                 {
-                    "event_time": datetime(2025, 1, 1, 0),
-                    "product": "FCR_D",
-                    "direction": "up",
-                    "activated_mw": 0.8,
+                    "event_time": datetime(2025, 1, 1, 1),
+                    "product": "AFRR",
+                    "direction": "down",
+                    "activated_mw": 0.6,
                 },
+                {
+                    "event_time": datetime(2025, 1, 1, 2),
+                    "product": "MFRR",
+                    "direction": "up",
+                    "activated_mw": 0.4,
+                },
+            ],
+        )
+        write_table(
+            conn,
+            "fact_reserve_volume",
+            [
+                {
+                    "event_time": datetime(2025, 1, 1, 1),
+                    "product": "AFRR",
+                    "direction": "down",
+                    "procured_mw": 2.0,
+                },
+                {
+                    "event_time": datetime(2025, 1, 1, 2),
+                    "product": "MFRR",
+                    "direction": "up",
+                    "procured_mw": 0.5,
+                },
+            ],
+        )
+        write_table(
+            conn,
+            "fact_activation_price",
+            [
+                {
+                    "event_time": datetime(2025, 1, 1, 1),
+                    "product": "AFRR",
+                    "direction": "down",
+                    "activation_price_eur_mwh": 70.0,
+                },
+                {
+                    "event_time": datetime(2025, 1, 1, 2),
+                    "product": "MFRR",
+                    "direction": "up",
+                    "activation_price_eur_mwh": 60.0,
+                },
+            ],
+        )
+        write_table(
+            conn,
+            "fact_imbalance_price",
+            [],
+            columns={
+                "event_time": "TIMESTAMP",
+                "imbalance_price_eur_mwh": "DOUBLE",
+                "price_type": "VARCHAR",
+            },
+        )
+        for table in ("dispatch_energy", "fact_day_ahead_price", "dispatch_imbalance"):
+            write_table(conn, table, [], columns={"event_time": "TIMESTAMP"})
+    finally:
+        conn.close()
+
+    run_settlement(config)
+    components = _components(config)
+
+    # AFRR down: share 1.0/2.0 = 0.5, energy 0.5*0.6 = 0.3, value -0.3*70 = -21.0
+    # MFRR up:   share 0.5/0.5 = 1.0, energy 1.0*0.4 = 0.4, value +0.4*60 = +24.0
+    # FCR_D up: not published -> no activation.
+    assert components["reserve_activation"] == pytest.approx(-21.0 + 24.0)
+
+
+def test_reserve_activation_falls_back_to_imbalance_price(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed_empty_reserve_tables(config)
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(
+            conn,
+            "dispatch_reserve",
+            [
+                {
+                    "delivery_time": datetime(2025, 1, 1, 1),
+                    "duration_hours": 1.0,
+                    "capacity_mw": 1.0,
+                    "product": "AFRR",
+                    "direction": "down",
+                    "conditional_acceptance": True,
+                },
+            ],
+        )
+        write_table(
+            conn,
+            "fact_activation",
+            [
                 {
                     "event_time": datetime(2025, 1, 1, 1),
                     "product": "AFRR",
@@ -415,13 +532,21 @@ def test_reserve_activation_replay_settles_at_imbalance_price(tmp_path) -> None:
         )
         write_table(
             conn,
-            "fact_imbalance_price",
+            "fact_reserve_volume",
             [
                 {
-                    "event_time": datetime(2025, 1, 1, 0),
-                    "imbalance_price_eur_mwh": 60.0,
-                    "price_type": "final",
+                    "event_time": datetime(2025, 1, 1, 1),
+                    "product": "AFRR",
+                    "direction": "down",
+                    "procured_mw": 2.0,
                 },
+            ],
+        )
+        # No fact_activation_price -> falls back to final imbalance price.
+        write_table(
+            conn,
+            "fact_imbalance_price",
+            [
                 {
                     "event_time": datetime(2025, 1, 1, 1),
                     "imbalance_price_eur_mwh": 70.0,
@@ -431,18 +556,11 @@ def test_reserve_activation_replay_settles_at_imbalance_price(tmp_path) -> None:
         )
         for table in ("dispatch_energy", "fact_day_ahead_price", "dispatch_imbalance"):
             write_table(conn, table, [], columns={"event_time": "TIMESTAMP"})
-        for table in (
-            "fact_svk_fcr_d_up",
-            "fact_svk_fcr_d_down",
-            "fact_svk_fcr_n",
-            "fact_svk_afrr_mfrr_capacity",
-        ):
-            write_table(conn, table, [], columns={"event_time": "TIMESTAMP", "price": "DOUBLE"})
     finally:
         conn.close()
 
     run_settlement(config)
     components = _components(config)
 
-    # up: min(0.5, 0.8) x 60.0 = +30.0; down: min(1.0, 0.6) x 70.0 = -42.0
-    assert components["reserve_activation"] == pytest.approx(30.0 - 42.0)
+    # share 0.5, energy 0.3, value -0.3*70 = -21.0 at the fallback imbalance price.
+    assert components["reserve_activation"] == pytest.approx(-21.0)

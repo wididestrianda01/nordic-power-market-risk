@@ -87,23 +87,88 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
             )
         )
 
-        activation_rows = []
-        activation_raw = b""
-        for product, process_type in entsoe.ACTIVATION_PROCESS_TYPES.items():
-            raw = entsoe.fetch_activated_energy(
-                settings.entsoe_api_token, config.zone, process_type, start, end
-            )
-            activation_raw += raw
-            activation_rows.extend(entsoe.parse_activated_energy(raw, product))
-        row_count = write_table(conn, "raw_activation", activation_rows)
+        # Activated balancing energy prices (A84): fetched in month chunks; the
+        # product is read back from each TimeSeries' businessType.
+        raw_chunks = entsoe.fetch_activated_energy_prices(
+            settings.entsoe_api_token, config.zone, start, end
+        )
+        activation_price_rows = [
+            row for raw in raw_chunks for row in entsoe.parse_activated_energy_prices(raw)
+        ]
+        row_count = write_table(conn, "raw_activation_price", activation_price_rows)
         entries.append(
             make_entry(
-                name="entsoe_activation",
+                name="entsoe_activation_price",
                 licence="ENTSO-E Transparency Platform terms (no bulk redistribution)",
                 coverage_start=start,
                 coverage_end=end,
                 endpoint=entsoe.BASE_URL,
+                raw=b"".join(raw_chunks),
+                row_count=row_count,
+            )
+        )
+
+        procured_rows = []
+        procured_raw = b""
+        for product, process_type in entsoe.ACTIVATION_PROCESS_TYPES.items():
+            raw_chunks = entsoe.fetch_procured_volume(
+                settings.entsoe_api_token, config.zone, process_type, start, end
+            )
+            procured_raw += b"".join(raw_chunks)
+            for raw in raw_chunks:
+                procured_rows.extend(entsoe.parse_procured_volume(raw, product))
+        row_count = write_table(conn, "raw_reserve_volume", procured_rows)
+        entries.append(
+            make_entry(
+                name="entsoe_reserve_volume",
+                licence="ENTSO-E Transparency Platform terms (no bulk redistribution)",
+                coverage_start=start,
+                coverage_end=end,
+                endpoint=entsoe.BASE_URL,
+                raw=procured_raw,
+                row_count=row_count,
+            )
+        )
+        # Activated balancing energy VOLUMES: SvK 60-min aFRR/FCR-N/FCR-D
+        # (discontinued 2025-03-04) plus ENTSO-E A86 imbalance volume, which IS
+        # the mFRR activation volume and covers SE3 continuously (15-min -> hourly).
+        activation_rows = []
+        activation_raw = b""
+        for series in svk.ACTIVATION_RESOURCE_IDS:
+            raw = svk.fetch_activated_energy(series)
+            activation_raw += raw
+            activation_rows.extend(svk.parse_activated_energy(raw, config.zone))
+        imbalance_chunks = entsoe.fetch_imbalance_volumes(
+            settings.entsoe_api_token, config.zone, start, end
+        )
+        for raw in imbalance_chunks:
+            activation_rows.extend(entsoe.parse_imbalance_volumes(raw))
+        activation_columns = {
+            "timestamp": "VARCHAR",
+            "product": "VARCHAR",
+            "direction": "VARCHAR",
+            "activated_mw": "DOUBLE",
+        }
+        row_count = write_table(conn, "raw_activation", activation_rows, columns=activation_columns)
+        entries.append(
+            make_entry(
+                name="svk_activated_energy",
+                licence="CC BY 4.0",
+                coverage_start=start,
+                coverage_end=end,
+                endpoint=svk.BASE_URL,
                 raw=activation_raw,
+                row_count=row_count,
+            )
+        )
+        entries.append(
+            make_entry(
+                name="entsoe_imbalance_volume",
+                licence="ENTSO-E Transparency Platform terms (no bulk redistribution)",
+                coverage_start=start,
+                coverage_end=end,
+                endpoint=entsoe.BASE_URL,
+                raw=b"".join(imbalance_chunks),
                 row_count=row_count,
             )
         )
