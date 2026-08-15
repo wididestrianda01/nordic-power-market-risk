@@ -49,6 +49,20 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
     "raw_svk_afrr_mfrr_capacity": [
         {"start_time_utc": "2024-01-15T00:00:00", "price": 3.0},
     ],
+    "raw_activation": [
+        {
+            "timestamp": "2024-01-15T00:00:00",
+            "product": "FCR_N",
+            "direction": "up",
+            "activated_mw": 0.4,
+        },
+        {
+            "timestamp": "2024-01-15T00:00:00",
+            "product": "AFRR",
+            "direction": "down",
+            "activated_mw": 0.6,
+        },
+    ],
     "raw_smhi_observations": [
         {"timestamp": 1705276800000, "value": -2.5},  # 2024-01-15T00:00:00
     ],
@@ -89,6 +103,7 @@ def test_build_all_facts_writes_every_fact_table(tmp_path: Path) -> None:
         "fact_svk_afrr_mfrr_capacity": 1,
         "fact_imbalance_price": 2,  # estimated + final per raw row
         "fact_smhi_observations": 1,
+        "fact_activation": 2,
     }
 
 

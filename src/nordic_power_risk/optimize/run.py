@@ -534,6 +534,7 @@ def _interval_row(commitment: _Commitment, terminal_value_eur: float) -> dict[st
     return {
         "issue_time": interval.issue_time,
         "delivery_time": interval.delivery_time,
+        "duration_hours": interval.duration_hours,
         "charge_mw": interval.charge_mw,
         "discharge_mw": interval.discharge_mw,
         "soc_mwh": interval.soc_mwh,

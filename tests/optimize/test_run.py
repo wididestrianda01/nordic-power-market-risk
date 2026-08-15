@@ -155,6 +155,7 @@ def test_run_persists_reproducible_schedule_and_objective_breakdown(tmp_path) ->
     assert list(rows.columns) == [
         "issue_time",
         "delivery_time",
+        "duration_hours",
         "charge_mw",
         "discharge_mw",
         "soc_mwh",

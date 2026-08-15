@@ -23,6 +23,7 @@ FACT_TABLES = [
     "fact_svk_afrr_mfrr_capacity",
     "fact_imbalance_price",
     "fact_smhi_observations",
+    "fact_activation",
 ]
 
 
@@ -67,6 +68,14 @@ def _seed_across_spine(config: PipelineConfig, event_times: pd.DatetimeIndex) ->
             conn,
             "raw_svk_afrr_mfrr_capacity",
             [{"start_time_utc": t, "price": 3.0} for t in iso_rows],
+        )
+        write_table(
+            conn,
+            "raw_activation",
+            [
+                {"timestamp": t, "product": "FCR_N", "direction": "up", "activated_mw": 0.5}
+                for t in iso_rows
+            ],
         )
         write_table(
             conn,
@@ -125,6 +134,11 @@ def test_imbalance_estimated_final_swap_resolves_at_t_plus_45(tmp_path: Path) ->
             ],
         )
         write_table(conn, "raw_svk_afrr_mfrr_capacity", [{"start_time_utc": ts, "price": 3.0}])
+        write_table(
+            conn,
+            "raw_activation",
+            [{"timestamp": ts, "product": "FCR_N", "direction": "up", "activated_mw": 0.5}],
+        )
         write_table(conn, "raw_smhi_observations", [{"timestamp": 1705276800000, "value": -2.5}])
     finally:
         conn.close()

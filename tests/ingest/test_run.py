@@ -6,6 +6,7 @@ import pytest
 import responses
 
 from nordic_power_risk.config import PipelineConfig, Settings, Window
+from nordic_power_risk.ingest.entsoe import ACTIVATION_PROCESS_TYPES
 from nordic_power_risk.ingest.entsoe import BASE_URL as ENTSOE_URL
 from nordic_power_risk.ingest.esett import BASE_URL as ESETT_URL
 from nordic_power_risk.ingest.run import ingest_all
@@ -19,6 +20,18 @@ ENTSOE_XML = b"""<?xml version="1.0"?>
       <timeInterval><start>2020-01-01T00:00Z</start></timeInterval>
       <resolution>PT60M</resolution>
       <Point><position>1</position><price.amount>10.5</price.amount></Point>
+    </Period>
+  </TimeSeries>
+</Publication_MarketDocument>
+"""
+ACTIVATION_XML = b"""<?xml version="1.0"?>
+<Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
+  <TimeSeries>
+    <direction>A01</direction>
+    <Period>
+      <timeInterval><start>2020-01-01T00:00Z</start></timeInterval>
+      <resolution>PT60M</resolution>
+      <Point><position>1</position><quantity>0.5</quantity></Point>
     </Period>
   </TimeSeries>
 </Publication_MarketDocument>
@@ -47,6 +60,8 @@ def test_ingest_all_raises_without_entsoe_token(config):
 @responses.activate
 def test_ingest_all_writes_tables_and_manifest(config):
     responses.add(responses.GET, ENTSOE_URL, body=ENTSOE_XML, status=200)
+    for _ in ACTIVATION_PROCESS_TYPES:
+        responses.add(responses.GET, ENTSOE_URL, body=ACTIVATION_XML, status=200)
     responses.add(responses.GET, ESETT_URL, body=ESETT_JSON, status=200)
     responses.add(responses.GET, SVK_URL, body=SVK_JSON, status=200)
     responses.add(
@@ -67,6 +82,7 @@ def test_ingest_all_writes_tables_and_manifest(config):
         "svk_fcr_capacity",
         "svk_afrr_mfrr_capacity",
         "smhi_observations",
+        "entsoe_activation",
     }
     assert config.manifest_path.exists()
     assert config.duckdb_path.exists()

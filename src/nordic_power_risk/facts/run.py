@@ -12,6 +12,7 @@ import pandas as pd
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.facts.rules import (
+    ACTIVATION_PUBLICATION_LAG,
     IMBALANCE_ESTIMATED_LAG,
     IMBALANCE_FINAL_LAG,
     afrr_mfrr_capacity_issue_time,
@@ -39,6 +40,13 @@ def _read_raw(conn: duckdb.DuckDBPyConnection, table: str) -> pd.DataFrame:
     else:
         df["timestamp"] = pd.to_datetime(df[source_column])
     return df
+
+
+def _table_exists(conn: duckdb.DuckDBPyConnection, table: str) -> bool:
+    count = conn.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
+    ).fetchone()[0]
+    return count > 0
 
 
 def _price_rows(
@@ -105,6 +113,26 @@ def _smhi_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
+def _activation_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Aggregate reserve activation volumes -> fact rows keyed by product/direction."""
+    event_times = df["timestamp"].dt.to_pydatetime()
+    products = df["product"].tolist()
+    directions = df["direction"].tolist()
+    values = df["activated_mw"].tolist()
+    return [
+        {
+            "event_time": event_time,
+            "issue_time": event_time + ACTIVATION_PUBLICATION_LAG,
+            "product": str(product),
+            "direction": str(direction),
+            "activated_mw": float(value),
+        }
+        for event_time, product, direction, value in zip(
+            event_times, products, directions, values, strict=True
+        )
+    ]
+
+
 def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
     conn = get_connection(config.duckdb_path)
     results: list[FactBuildResult] = []
@@ -158,6 +186,20 @@ def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
         smhi_columns = {"event_time": "TIMESTAMP", "issue_time": "TIMESTAMP", "value": "DOUBLE"}
         count = write_table(conn, "fact_smhi_observations", smhi_rows, columns=smhi_columns)
         results.append(FactBuildResult(table="fact_smhi_observations", row_count=count))
+
+        activation_rows: list[dict[str, Any]] = []
+        if _table_exists(conn, "raw_activation"):
+            activation_df = _read_raw(conn, "raw_activation")
+            activation_rows = _activation_rows(activation_df)
+        activation_columns = {
+            "event_time": "TIMESTAMP",
+            "issue_time": "TIMESTAMP",
+            "product": "VARCHAR",
+            "direction": "VARCHAR",
+            "activated_mw": "DOUBLE",
+        }
+        count = write_table(conn, "fact_activation", activation_rows, columns=activation_columns)
+        results.append(FactBuildResult(table="fact_activation", row_count=count))
     finally:
         conn.close()
     return results

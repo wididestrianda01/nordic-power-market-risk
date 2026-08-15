@@ -150,8 +150,18 @@ def risk() -> None:
 
 @app.command()
 def settle() -> None:
-    """Settlement and P&L attribution (Phase 4)."""
-    _not_implemented("settle")
+    """Settle paper positions against observed prices and reconcile P&L (Phase 4)."""
+    from nordic_power_risk.settle.run import reconcile, run_settlement
+
+    config = get_config()
+    result = run_settlement(config)
+    reconciliation = reconcile(config)
+    typer.echo(
+        f"{result.table}: {result.row_count} rows, "
+        f"total-pnl={result.total_pnl_eur:.2f} EUR; "
+        f"reconcile: residual={reconciliation.residual_eur:.2f} EUR "
+        f"-> {config.duckdb_path}"
+    )
 
 
 @app.command()

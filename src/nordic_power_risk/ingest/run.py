@@ -86,6 +86,27 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
                 row_count=row_count,
             )
         )
+
+        activation_rows = []
+        activation_raw = b""
+        for product, process_type in entsoe.ACTIVATION_PROCESS_TYPES.items():
+            raw = entsoe.fetch_activated_energy(
+                settings.entsoe_api_token, config.zone, process_type, start, end
+            )
+            activation_raw += raw
+            activation_rows.extend(entsoe.parse_activated_energy(raw, product))
+        row_count = write_table(conn, "raw_activation", activation_rows)
+        entries.append(
+            make_entry(
+                name="entsoe_activation",
+                licence="ENTSO-E Transparency Platform terms (no bulk redistribution)",
+                coverage_start=start,
+                coverage_end=end,
+                endpoint=entsoe.BASE_URL,
+                raw=activation_raw,
+                row_count=row_count,
+            )
+        )
     finally:
         conn.close()
 

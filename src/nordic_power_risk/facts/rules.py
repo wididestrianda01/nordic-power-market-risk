@@ -18,8 +18,11 @@ IMBALANCE_FINAL_LAG = timedelta(minutes=45)
 
 # Imbalance price *forecast* decision cutoff (T09 secondary target), distinct from the
 # settlement lags above: mFRR energy is activated close to real time, so the forecast
-# must be issued 60min before delivery -- a fixed real-time lag, not a local-clock gate.
 IMBALANCE_FORECAST_LEAD = timedelta(minutes=60)
+
+# Activated balancing energy is published ex-post (ENTSO-E deadline ~30min after
+# the end of the ISP); the fact row's issue_time reflects that publication lag.
+ACTIVATION_PUBLICATION_LAG = timedelta(minutes=30)
 
 
 def _local_cutoff(event_time_utc: datetime, cutoff: time) -> datetime:
@@ -59,6 +62,7 @@ def imbalance_forecast_issue_time(event_time_utc: datetime) -> datetime:
 
 
 __all__ = [
+    "ACTIVATION_PUBLICATION_LAG",
     "IMBALANCE_ESTIMATED_LAG",
     "IMBALANCE_FINAL_LAG",
     "IMBALANCE_FORECAST_LEAD",

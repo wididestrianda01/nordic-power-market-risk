@@ -84,3 +84,66 @@ def parse_day_ahead_prices(raw: bytes) -> list[dict[str, Any]]:
             timestamp = period_start + timedelta(hours=position - 1)
             rows.append({"timestamp": timestamp.isoformat(), "price_eur_mwh": price})
     return rows
+
+
+# ENTSO-E process types for activated balancing energy (document A73).
+ACTIVATION_PROCESS_TYPES = {
+    "FCR_N": "A51",  # Frequency Containment Reserve
+    "AFRR": "A52",  # Automatic Frequency Restoration Reserve
+    "MFRR": "A53",  # Manual Frequency Restoration Reserve
+}
+
+
+def fetch_activated_energy(
+    token: str,
+    zone: str,
+    process_type: str,
+    start: date,
+    end: date,
+    *,
+    timeout: float = 30.0,
+) -> bytes:
+    """Raw XML for document A73 (activated balancing quantities) over [start, end)."""
+    eic = ZONE_EIC[zone]
+    params = {
+        "securityToken": token,
+        "documentType": "A73",
+        "processType": process_type,
+        "in_Domain": eic,
+        "out_Domain": eic,
+        "periodStart": start.strftime("%Y%m%d0000"),
+        "periodEnd": end.strftime("%Y%m%d0000"),
+    }
+    response = requests.get(BASE_URL, params=params, timeout=timeout)
+    response.raise_for_status()
+    return response.content
+
+
+def parse_activated_energy(raw: bytes, product: str) -> list[dict[str, Any]]:
+    """A73 XML TimeSeries -> [{"timestamp", "product", "direction", "activated_mw"}]."""
+    root = ET.fromstring(raw)
+    rows: list[dict[str, Any]] = []
+    for series in root.findall("ns:TimeSeries", NAMESPACE):
+        direction_code = series.findtext("ns:direction", namespaces=NAMESPACE, default="A01")
+        direction = "up" if direction_code == "A01" else "down"
+        period = series.find("ns:Period", NAMESPACE)
+        if period is None:
+            continue
+        start_str = period.findtext("ns:timeInterval/ns:start", namespaces=NAMESPACE)
+        resolution = period.findtext("ns:resolution", namespaces=NAMESPACE)
+        if start_str is None or resolution != "PT60M":
+            continue
+        period_start = datetime.strptime(start_str, "%Y-%m-%dT%H:%MZ")
+        for point in period.findall("ns:Point", NAMESPACE):
+            position = int(point.findtext("ns:position", namespaces=NAMESPACE, default="0"))
+            volume = float(point.findtext("ns:quantity", namespaces=NAMESPACE, default="nan"))
+            timestamp = period_start + timedelta(hours=position - 1)
+            rows.append(
+                {
+                    "timestamp": timestamp.isoformat(),
+                    "product": product,
+                    "direction": direction,
+                    "activated_mw": volume,
+                }
+            )
+    return rows
