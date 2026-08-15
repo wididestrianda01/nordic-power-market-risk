@@ -163,17 +163,35 @@ def risk() -> None:
 
 @app.command()
 def settle() -> None:
-    """Settle paper positions against observed prices and reconcile P&L (Phase 4)."""
+    """Settle, reconcile, compare policies, attribute, and stress (Phase 4)."""
+    from nordic_power_risk.settle.attribution import attribute
+    from nordic_power_risk.settle.compare import compare_policies
     from nordic_power_risk.settle.run import reconcile, run_settlement
+    from nordic_power_risk.settle.stress import run_stresses
 
     config = get_config()
     result = run_settlement(config)
     reconciliation = reconcile(config)
+    comparison = compare_policies(config)
+    attribution = attribute(config)
+    stress = run_stresses(config)
+
     typer.echo(
         f"{result.table}: {result.row_count} rows, "
         f"total-pnl={result.total_pnl_eur:.2f} EUR; "
-        f"reconcile: residual={reconciliation.residual_eur:.2f} EUR "
-        f"-> {config.duckdb_path}"
+        f"reconcile residual={reconciliation.residual_eur:.2f} EUR"
+    )
+    typer.echo(
+        "policies: " + ", ".join(f"{n}={v:.2f}" for n, v in comparison.policies.items())
+    )
+    typer.echo(
+        "attribution: "
+        + ", ".join(f"{n}={v:.2f}" for n, v in attribution.components.items())
+        + f" (gap={attribution.gap_eur:.2f} EUR)"
+    )
+    typer.echo(
+        f"stress: baseline={stress.baseline_eur:.2f} EUR, "
+        + ", ".join(f"{n}={v:.2f}" for n, v in stress.scenarios.items())
     )
 
 

@@ -34,6 +34,7 @@ def _seed_empty_reserve_tables(config: PipelineConfig) -> None:
                 "delivery_time": "TIMESTAMP",
                 "duration_hours": "DOUBLE",
                 "capacity_mw": "DOUBLE",
+                "capacity_value_eur": "DOUBLE",
                 "product": "VARCHAR",
                 "direction": "VARCHAR",
                 "conditional_acceptance": "BOOLEAN",
@@ -92,6 +93,8 @@ def _seed_energy(config: PipelineConfig) -> None:
             "charge_mw": 1.0,
             "discharge_mw": 0.0,
             "degradation_cost_eur": 1.0,
+            "objective_eur": 0.0,
+            "terminal_value_eur": 0.0,
         },
         {
             "delivery_time": datetime(2025, 1, 1, 1),
@@ -99,6 +102,8 @@ def _seed_energy(config: PipelineConfig) -> None:
             "charge_mw": 0.0,
             "discharge_mw": 1.0,
             "degradation_cost_eur": 1.5,
+            "objective_eur": 0.0,
+            "terminal_value_eur": 0.0,
         },
     ]
     prices = [
@@ -113,7 +118,12 @@ def _seed_energy(config: PipelineConfig) -> None:
             conn,
             "dispatch_imbalance",
             [],
-            columns={"delivery_time": "TIMESTAMP", "duration_hours": "DOUBLE"},
+            columns={
+                "delivery_time": "TIMESTAMP",
+                "duration_hours": "DOUBLE",
+                "objective_eur": "DOUBLE",
+                "terminal_value_eur": "DOUBLE",
+            },
         )
         write_table(
             conn,

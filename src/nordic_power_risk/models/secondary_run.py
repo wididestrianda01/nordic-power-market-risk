@@ -202,6 +202,11 @@ def _persist_optimizer_forecasts(
 def _tertiary_rows(
     table: str, frame: pd.DataFrame
 ) -> tuple[list[dict[str, object]], TertiaryForecastResult]:
+    if frame.empty:
+        # SE3 may have no procured aFRR/mFRR in one direction -> empty feature table.
+        return [], TertiaryForecastResult(
+            target=table, source="seasonal_naive", n_obs=0, mae=float("nan")
+        )
     required = {"event_time", "price", "price_lag_168h"}
     if not required.issubset(frame.columns):
         raise ValueError(f"{table} is missing event_time, price, or price_lag_168h")
