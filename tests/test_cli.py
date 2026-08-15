@@ -109,10 +109,9 @@ def test_validate_fails_loud_on_null_value(tmp_path, monkeypatch):
 
 
 def test_ingest_without_token_exits_nonzero(monkeypatch):
-    monkeypatch.delenv("ENTSOE_API_TOKEN", raising=False)
-    from nordic_power_risk import config as config_module
+    from nordic_power_risk.config import Settings
 
-    config_module.get_settings.cache_clear()
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(entsoe_api_token=None))
     result = runner.invoke(app, ["ingest"])
     assert result.exit_code == 1
     assert "ENTSOE_API_TOKEN" in result.output
