@@ -96,8 +96,19 @@ def models() -> None:
 
 @app.command()
 def optimize() -> None:
-    """MILP dispatch optimization (Phase 3)."""
-    _not_implemented("optimize")
+    """Optimize energy dispatch from promoted day-ahead forecasts (Phase 3)."""
+    from nordic_power_risk.optimize.run import run_energy_dispatch
+
+    config = get_config()
+    try:
+        result = run_energy_dispatch(config)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(
+        f"{result.table}: {result.row_count} rows, "
+        f"objective={result.objective_eur:.2f} EUR -> {config.duckdb_path}"
+    )
 
 
 @app.command()

@@ -21,3 +21,13 @@ manifest_path: "data/manifest.json"
 # T05: local-only MLOps stack, MLflow tracking with SQLite backend (no server).
 mlflow_tracking_uri: "sqlite:///data/mlflow.db"
 mlflow_experiment: "day-ahead-ladder"
+
+# Phase 3 ticket 01: fixed 1 MW / 2 MWh study battery and energy-only objective.
+optimizer:
+  horizon_days: 1
+  power_limit_mw: 1.0
+  energy_capacity_mwh: 2.0
+  one_way_efficiency: 0.9487
+  initial_soc_mwh: 1.0
+  terminal_value_eur_mwh: 30.0
+  degradation_cost_eur_mwh: 15.0

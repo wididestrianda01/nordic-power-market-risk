@@ -1,0 +1,414 @@
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import pytest
+from typer.testing import CliRunner
+
+from nordic_power_risk import cli
+from nordic_power_risk.cli import app
+from nordic_power_risk.config import DispatchConfig, PipelineConfig, Window
+from nordic_power_risk.facts.rules import day_ahead_issue_time
+from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.optimize import run as run_module
+from nordic_power_risk.optimize.dispatch import DispatchForecast, solve_energy_dispatch
+from nordic_power_risk.optimize.run import run_energy_dispatch
+
+
+runner = CliRunner()
+ISSUE_TIME = datetime(2025, 1, 1, 9)
+DELIVERY_TIME = datetime(2025, 1, 2)
+STOCKHOLM = ZoneInfo("Europe/Stockholm")
+UTC = timezone.utc
+
+
+def _config(
+    tmp_path,  # type: ignore[no-untyped-def]
+    *,
+    horizon_days: int = 1,
+    initial_soc_mwh: float = 1.0,
+    terminal_value_eur_mwh: float = 30.0,
+) -> PipelineConfig:
+    return PipelineConfig(
+        zone="SE3",
+        windows={"primary": Window(start=date(2025, 1, 1), end=date(2025, 1, 6))},
+        duckdb_path=tmp_path / "nordic_power_risk.duckdb",
+        manifest_path=tmp_path / "manifest.json",
+        optimizer=DispatchConfig(
+            horizon_days=horizon_days,
+            initial_soc_mwh=initial_soc_mwh,
+            terminal_value_eur_mwh=terminal_value_eur_mwh,
+        ),
+    )
+
+
+def _write_forecasts(config: PipelineConfig, rows: list[dict[str, object]]) -> None:
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(conn, "forecast_day_ahead", rows)
+    finally:
+        conn.close()
+
+
+def _seed_derived_forecasts(config: PipelineConfig) -> None:
+    rows = [
+        {"event_time": DELIVERY_TIME + timedelta(hours=hour), "q0_5": price}
+        for hour, price in enumerate((-100.0, 200.0))
+    ]
+    _write_forecasts(config, rows)
+
+
+def _fetch_dispatch(config: PipelineConfig) -> pd.DataFrame:
+    conn = get_connection(config.duckdb_path)
+    try:
+        return conn.execute("SELECT * FROM dispatch_energy ORDER BY delivery_time").fetchdf()
+    finally:
+        conn.close()
+
+
+def _forecast_row(
+    issue_time: datetime,
+    delivery_time: datetime,
+    price: float,
+    duration_hours: float = 1.0,
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "issue_time": issue_time,
+        "event_time": delivery_time,
+        "q0_5": price,
+        "duration_hours": duration_hours,
+        **extra,
+    }
+
+
+def _utc_hours_for_local_day(delivery_date: date) -> list[datetime]:
+    start_local = datetime.combine(delivery_date, time(), tzinfo=STOCKHOLM)
+    end_local = datetime.combine(delivery_date + timedelta(days=1), time(), tzinfo=STOCKHOLM)
+    current = start_local.astimezone(UTC)
+    end = end_local.astimezone(UTC)
+    hours = []
+    while current < end:
+        hours.append(current.replace(tzinfo=None))
+        current += timedelta(hours=1)
+    return hours
+
+
+def test_run_persists_reproducible_schedule_and_objective_breakdown(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed_derived_forecasts(config)
+
+    result = run_energy_dispatch(config)
+    rows = _fetch_dispatch(config)
+
+    assert result.table == "dispatch_energy"
+    assert result.row_count == 2
+    assert list(rows.columns) == [
+        "issue_time",
+        "delivery_time",
+        "charge_mw",
+        "discharge_mw",
+        "soc_mwh",
+        "energy_revenue_eur",
+        "degradation_cost_eur",
+        "terminal_value_eur",
+        "objective_eur",
+        "solver_status",
+    ]
+    assert rows["issue_time"].nunique() == 1
+    assert rows["issue_time"].tolist() == [
+        day_ahead_issue_time(DELIVERY_TIME),
+        day_ahead_issue_time(DELIVERY_TIME + timedelta(hours=1)),
+    ]
+    assert rows["delivery_time"].tolist() == [DELIVERY_TIME, DELIVERY_TIME + timedelta(hours=1)]
+    assert rows.iloc[-1]["terminal_value_eur"] == result.terminal_value_eur
+    assert set(rows["solver_status"]) == {"optimal"}
+
+
+def test_derived_forecasts_reject_unsupported_multiday_horizon(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, horizon_days=2)
+    _seed_derived_forecasts(config)
+
+    with pytest.raises(ValueError, match="explicit issue_time"):
+        run_energy_dispatch(config)
+
+
+def test_two_vintages_solve_calendar_windows_commit_once_and_handoff_soc(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, horizon_days=2, terminal_value_eur_mwh=0.0)
+    issue_two = datetime(2025, 1, 2, 9)
+    rows = [
+        _forecast_row(ISSUE_TIME, datetime(2025, 1, 2), -1_000.0, 0.5),
+        _forecast_row(ISSUE_TIME, datetime(2025, 1, 2, 0, 30), -1_000.0, 0.5),
+        _forecast_row(ISSUE_TIME, datetime(2025, 1, 3), 1_000.0),
+        _forecast_row(ISSUE_TIME, datetime(2025, 1, 4), 0.0),
+        _forecast_row(issue_two, datetime(2025, 1, 3), 1_000.0, 0.5),
+        _forecast_row(issue_two, datetime(2025, 1, 3, 0, 30), 1_000.0, 0.5),
+        _forecast_row(issue_two, datetime(2025, 1, 4), 0.0),
+        _forecast_row(issue_two, datetime(2025, 1, 5), 0.0),
+    ]
+    _write_forecasts(config, rows)
+    observed_windows: list[list[datetime]] = []
+    real_solve = run_module.solve_energy_dispatch
+
+    def capture_window(forecasts, dispatch_config):  # type: ignore[no-untyped-def]
+        observed_windows.append([forecast.delivery_time for forecast in forecasts])
+        return real_solve(forecasts, dispatch_config)
+
+    monkeypatch.setattr(run_module, "solve_energy_dispatch", capture_window)
+
+    result = run_energy_dispatch(config)
+    persisted = _fetch_dispatch(config)
+
+    assert observed_windows == [
+        [datetime(2025, 1, 2), datetime(2025, 1, 2, 0, 30), datetime(2025, 1, 3)],
+        [datetime(2025, 1, 3), datetime(2025, 1, 3, 0, 30), datetime(2025, 1, 4)],
+    ]
+    assert result.row_count == 4
+    assert persisted["delivery_time"].is_unique
+    assert persisted["delivery_time"].tolist() == [
+        datetime(2025, 1, 2),
+        datetime(2025, 1, 2, 0, 30),
+        datetime(2025, 1, 3),
+        datetime(2025, 1, 3, 0, 30),
+    ]
+    assert persisted["issue_time"].tolist() == [
+        ISSUE_TIME,
+        ISSUE_TIME,
+        issue_two,
+        issue_two,
+    ]
+    previous_soc = config.optimizer.initial_soc_mwh
+    for row in persisted.itertuples(index=False):
+        expected_soc = (
+            previous_soc
+            + 0.9487 * row.charge_mw * 0.5
+            - row.discharge_mw * 0.5 / 0.9487
+        )
+        assert row.soc_mwh == pytest.approx(expected_soc)
+        previous_soc = row.soc_mwh
+
+
+@pytest.mark.parametrize(
+    ("delivery_date", "expected_hours"),
+    [(date(2025, 3, 30), 23), (date(2025, 10, 26), 25)],
+)
+def test_stockholm_delivery_day_accepts_dst_hour_counts(
+    tmp_path, delivery_date: date, expected_hours: int
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, initial_soc_mwh=0.0, terminal_value_eur_mwh=0.0)
+    delivery_hours = _utc_hours_for_local_day(delivery_date)
+    issue_time = day_ahead_issue_time(delivery_hours[0])
+    _write_forecasts(
+        config,
+        [_forecast_row(issue_time, delivery, 0.0) for delivery in delivery_hours],
+    )
+
+    result = run_energy_dispatch(config)
+
+    assert len(delivery_hours) == expected_hours
+    assert result.row_count == expected_hours
+
+
+def test_terminal_inventory_is_counted_once_at_final_committed_boundary(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(
+        tmp_path, horizon_days=2, initial_soc_mwh=2.0, terminal_value_eur_mwh=30.0
+    )
+    issue_two = datetime(2025, 1, 2, 9)
+    _write_forecasts(
+        config,
+        [
+            _forecast_row(ISSUE_TIME, datetime(2025, 1, 2), 0.0),
+            _forecast_row(ISSUE_TIME, datetime(2025, 1, 3), 0.0),
+            _forecast_row(issue_two, datetime(2025, 1, 3), 0.0),
+            _forecast_row(issue_two, datetime(2025, 1, 4), 0.0),
+        ],
+    )
+
+    result = run_energy_dispatch(config)
+    persisted = _fetch_dispatch(config)
+
+    assert result.row_count == 2
+    assert result.energy_revenue_eur == pytest.approx(0.0)
+    assert result.degradation_cost_eur == pytest.approx(0.0)
+    assert result.terminal_value_eur == pytest.approx(60.0)
+    assert result.objective_eur == pytest.approx(60.0)
+    assert persisted["terminal_value_eur"].tolist() == [0.0, 60.0]
+
+
+def test_rejects_forecast_vintage_later_than_day_ahead_cutoff(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    late_issue = day_ahead_issue_time(DELIVERY_TIME) + timedelta(minutes=1)
+    _write_forecasts(config, [_forecast_row(late_issue, DELIVERY_TIME, 10.0)])
+
+    with pytest.raises(ValueError, match="later than.*cutoff"):
+        run_energy_dispatch(config)
+
+
+def test_realized_price_columns_cannot_change_dispatch(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path, terminal_value_eur_mwh=0.0)
+    rows = [
+        {
+            "event_time": DELIVERY_TIME + timedelta(hours=hour),
+            "q0_5": price,
+            "realized_price_eur_mwh": realized,
+        }
+        for hour, price, realized in [(0, -100.0, 9_999.0), (1, 200.0, -9_999.0)]
+    ]
+    _write_forecasts(config, rows)
+    run_energy_dispatch(config)
+    first = _fetch_dispatch(config)
+    rows[0]["realized_price_eur_mwh"] = -9_999.0
+    rows[1]["realized_price_eur_mwh"] = 9_999.0
+    _write_forecasts(config, rows)
+
+    run_energy_dispatch(config)
+    second = _fetch_dispatch(config)
+
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_persisted_values_match_solution_sql_totals_and_replace_deterministically(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed_derived_forecasts(config)
+    forecasts = [
+        DispatchForecast(ISSUE_TIME, DELIVERY_TIME, -100.0),
+        DispatchForecast(ISSUE_TIME, DELIVERY_TIME + timedelta(hours=1), 200.0),
+    ]
+    solved = solve_energy_dispatch(forecasts, config.optimizer)
+
+    first_result = run_energy_dispatch(config)
+    first = _fetch_dispatch(config)
+    second_result = run_energy_dispatch(config)
+    second = _fetch_dispatch(config)
+
+    for row, interval in zip(first.itertuples(index=False), solved.intervals, strict=True):
+        assert row.charge_mw == pytest.approx(interval.charge_mw)
+        assert row.discharge_mw == pytest.approx(interval.discharge_mw)
+        assert row.soc_mwh == pytest.approx(interval.soc_mwh)
+        assert row.energy_revenue_eur == pytest.approx(interval.energy_revenue_eur)
+        assert row.degradation_cost_eur == pytest.approx(interval.degradation_cost_eur)
+        assert row.objective_eur == pytest.approx(
+            row.energy_revenue_eur - row.degradation_cost_eur + row.terminal_value_eur
+        )
+    assert first["terminal_value_eur"].iloc[:-1].eq(0.0).all()
+    assert first["terminal_value_eur"].iloc[-1] == pytest.approx(
+        config.optimizer.terminal_value_eur_mwh * first["soc_mwh"].iloc[-1]
+    )
+    assert first["energy_revenue_eur"].sum() == pytest.approx(first_result.energy_revenue_eur)
+    assert first["degradation_cost_eur"].sum() == pytest.approx(first_result.degradation_cost_eur)
+    assert first["terminal_value_eur"].sum() == pytest.approx(first_result.terminal_value_eur)
+    assert first["objective_eur"].sum() == pytest.approx(first_result.objective_eur)
+    assert first_result == second_result
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_solver_failure_does_not_persist_partial_schedule(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed_derived_forecasts(config)
+
+    def fail(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("HiGHS failed: termination=infeasible")
+
+    monkeypatch.setattr(run_module, "solve_energy_dispatch", fail)
+
+    with pytest.raises(RuntimeError, match="infeasible"):
+        run_energy_dispatch(config)
+    conn = get_connection(config.duckdb_path)
+    try:
+        table_count = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'dispatch_energy'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert table_count == 0
+
+
+def test_optimize_cli_runs_dispatch_and_reports_persisted_rows(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed_derived_forecasts(config)
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+
+    result = runner.invoke(app, ["optimize"])
+
+    assert result.exit_code == 0
+    assert "dispatch_energy: 2 rows" in result.output
+    assert str(config.duckdb_path) in result.output
+
+
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("empty", "forecast_day_ahead is empty"),
+        ("malformed", "missing promoted median"),
+        ("runtime", "solver unavailable"),
+    ],
+)
+def test_optimize_cli_fails_concisely_for_invalid_or_runtime_input(
+    tmp_path, monkeypatch, scenario: str, message: str
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    if scenario == "empty":
+        conn = get_connection(config.duckdb_path)
+        try:
+            write_table(
+                conn,
+                "forecast_day_ahead",
+                [],
+                columns={"event_time": "TIMESTAMP", "q0_5": "DOUBLE"},
+            )
+        finally:
+            conn.close()
+    elif scenario == "malformed":
+        _write_forecasts(config, [{"event_time": DELIVERY_TIME, "realized_price": 1.0}])
+    else:
+        _seed_derived_forecasts(config)
+        monkeypatch.setattr(
+            run_module,
+            "run_energy_dispatch",
+            lambda config: (_ for _ in ()).throw(RuntimeError("solver unavailable")),
+        )
+    monkeypatch.setattr(cli, "get_config", lambda: config)
+
+    result = runner.invoke(app, ["optimize"])
+
+    assert result.exit_code == 1
+    assert message in result.output
+
+
+def test_rejects_duplicate_delivery_within_forecast_vintage(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    duplicate = _forecast_row(ISSUE_TIME, DELIVERY_TIME, 10.0)
+    _write_forecasts(config, [duplicate, duplicate.copy()])
+
+    with pytest.raises(ValueError, match="duplicate delivery_time"):
+        run_energy_dispatch(config)
+
+
+def test_seven_day_vintage_excludes_day_eight_and_commits_day_one(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(
+        tmp_path, horizon_days=7, initial_soc_mwh=0.0, terminal_value_eur_mwh=0.0
+    )
+    deliveries = [DELIVERY_TIME + timedelta(days=offset) for offset in range(8)]
+    _write_forecasts(
+        config,
+        [_forecast_row(ISSUE_TIME, delivery, 0.0) for delivery in deliveries],
+    )
+    observed_windows: list[list[datetime]] = []
+    real_solve = run_module.solve_energy_dispatch
+
+    def capture_window(forecasts, dispatch_config):  # type: ignore[no-untyped-def]
+        observed_windows.append([forecast.delivery_time for forecast in forecasts])
+        return real_solve(forecasts, dispatch_config)
+
+    monkeypatch.setattr(run_module, "solve_energy_dispatch", capture_window)
+
+    result = run_energy_dispatch(config)
+    persisted = _fetch_dispatch(config)
+
+    assert observed_windows == [deliveries[:7]]
+    assert result.row_count == 1
+    assert persisted["delivery_time"].tolist() == deliveries[:1]
