@@ -128,9 +128,8 @@ def _capacity_fact_table(product: str, direction: str) -> str | None:
     if product == "FCR_N":
         return "fact_svk_fcr_n"
     if product in {"AFRR", "MFRR"}:
-        # The SvK aFRR/mFRR capacity resource is a single series; the repo's
-        # data model does not split it by product or direction.
-        return "fact_svk_afrr_mfrr_capacity"
+        # aFRR/mFRR capacity is split by product/direction into its own fact table.
+        return f"fact_svk_{product.lower()}_{direction}"
     return None
 
 
@@ -146,7 +145,10 @@ def _reserve_capacity_settlement(config: PipelineConfig) -> list[dict[str, Any]]
             "fact_svk_fcr_d_up",
             "fact_svk_fcr_d_down",
             "fact_svk_fcr_n",
-            "fact_svk_afrr_mfrr_capacity",
+            "fact_svk_afrr_up",
+            "fact_svk_afrr_down",
+            "fact_svk_mfrr_up",
+            "fact_svk_mfrr_down",
         )
     }
 

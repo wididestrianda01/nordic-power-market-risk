@@ -24,7 +24,13 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
         },
     ],
     "raw_svk_afrr_mfrr_capacity": [
-        {"start_time_utc": "2024-01-15T00:00:00", "price": 3.0},
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 3.0,
+            "bidding_zone": "SE3",
+            "reserve_product": "aFRRCapacityMarket",
+            "reserve_direction": "up",
+        },
     ],
     "raw_smhi_observations": [
         {"timestamp": 1705276800000, "value": -2.5},  # 2024-01-15T00:00:00

@@ -81,7 +81,20 @@ ESETT_JSON = json.dumps(
     [{"timestampUTC": "2020-01-01T00:00:00Z", "imblPurchasePrice": 1.0}]
 ).encode()
 SVK_JSON = json.dumps(
-    {"result": {"records": [{"start_time_utc": "2020-01-01T00:00:00", "value": 1.0}]}}
+    {
+        "result": {
+            "records": [
+                {
+                    "start_time_utc": "2020-01-01T00:00:00",
+                    "price": 1.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "aFRRCapacityMarket",
+                    "reserve_direction": "up",
+                    "volume": 5.0,
+                }
+            ]
+        }
+    }
 ).encode()
 SMHI_CSV = b"Datum;Tid (UTC);Lufttemperatur;Kvalitet\n2020-01-01;00:00:00;1.0;G\n"
 
@@ -127,6 +140,7 @@ def test_ingest_all_writes_tables_and_manifest(config):
         "esett_imbalance_price",
         "svk_fcr_capacity",
         "svk_afrr_mfrr_capacity",
+        "svk_mfrr_capacity",
         "smhi_observations",
         "entsoe_activation_price",
         "entsoe_reserve_volume",

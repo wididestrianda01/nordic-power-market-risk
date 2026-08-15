@@ -13,14 +13,14 @@ import requests
 
 BASE_URL = "https://data.svk.se/api/3/action/datastore_search"
 
-# CKAN resource_id per series (T03 research corrected: the two capacity
-# resource_ids were swapped — verified against live CKAN field/records).
-# Day-ahead energy price is sourced from ENTSO-E A44 only: SvK's day-ahead
-# series is discontinued (2026-07), covers only 2022-10 onward across 17
-# bidding zones, and is redundant with A44, so it is not ingested here.
+# CKAN resource_id per series. Live-verified 2026-08-15: the "afrr_mfrr_capacity"
+# resource holds aFRR capacity only (aFRRCapacityMarket); mFRR capacity
+# (mFRRCapacityMarket) is a separate resource, previously mislabeled as
+# "day_ahead_price". Day-ahead energy price is sourced from ENTSO-E A44 only.
 RESOURCE_IDS = {
     "fcr_capacity": "72ef5ec0-d0d7-4d22-95e9-4f22b3048af4",
     "afrr_mfrr_capacity": "6351d2cc-1657-43eb-b112-b8408c700529",
+    "mfrr_capacity": "0c56e30d-8fce-4c27-afc8-621c230ae34d",
 }
 
 

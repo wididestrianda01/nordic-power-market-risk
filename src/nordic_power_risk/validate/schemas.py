@@ -18,6 +18,7 @@ RAW_TABLE_VALUE_COLUMNS: dict[str, str] = {
     "raw_esett_imbalance_price": "imbalance_price_eur_mwh",
     "raw_svk_fcr_capacity": "price",
     "raw_svk_afrr_mfrr_capacity": "price",
+    "raw_svk_mfrr_capacity": "price",
     "raw_smhi_observations": "value",
 }
 
@@ -25,6 +26,7 @@ RAW_TABLE_VALUE_COLUMNS: dict[str, str] = {
 RAW_TABLE_TIMESTAMP_COLUMNS: dict[str, str] = {
     "raw_svk_fcr_capacity": "start_time_utc",
     "raw_svk_afrr_mfrr_capacity": "start_time_utc",
+    "raw_svk_mfrr_capacity": "start_time_utc",
 }
 
 # Tables with more than one row per timestamp (e.g. multiple reserve products/
@@ -32,6 +34,7 @@ RAW_TABLE_TIMESTAMP_COLUMNS: dict[str, str] = {
 RAW_TABLES_WITH_NON_UNIQUE_TIMESTAMP: set[str] = {
     "raw_svk_fcr_capacity",
     "raw_svk_afrr_mfrr_capacity",
+    "raw_svk_mfrr_capacity",
 }
 
 

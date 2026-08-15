@@ -81,6 +81,27 @@ def _fcr_rows(
     return _price_rows(subset, "price", fcr_capacity_issue_time)
 
 
+# aFRR/mFRR capacity live in two separate SvK resources (aFRR-only and mFRR-only);
+# each is split by direction into its own T09 tertiary target.
+_AFRR_MFRR_TARGETS = [
+    ("raw_svk_afrr_mfrr_capacity", "aFRRCapacityMarket", "fact_svk_afrr_up", "up"),
+    ("raw_svk_afrr_mfrr_capacity", "aFRRCapacityMarket", "fact_svk_afrr_down", "down"),
+    ("raw_svk_mfrr_capacity", "mFRRCapacityMarket", "fact_svk_mfrr_up", "up"),
+    ("raw_svk_mfrr_capacity", "mFRRCapacityMarket", "fact_svk_mfrr_down", "down"),
+]
+
+
+def _afrr_mfrr_rows(
+    df: pd.DataFrame, zone: str, reserve_product: str, reserve_direction: str
+) -> list[dict[str, Any]]:
+    subset = df[
+        (df["bidding_zone"] == zone)
+        & (df["reserve_product"] == reserve_product)
+        & (df["reserve_direction"] == reserve_direction)
+    ]
+    return _price_rows(subset, "price", afrr_mfrr_capacity_issue_time)
+
+
 def _imbalance_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     event_times = df["timestamp"].dt.to_pydatetime()
     values = df["imbalance_price_eur_mwh"].tolist()
@@ -185,12 +206,6 @@ def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
                 "price_eur_mwh",
                 day_ahead_issue_time,
             ),
-            (
-                "raw_svk_afrr_mfrr_capacity",
-                "fact_svk_afrr_mfrr_capacity",
-                "price",
-                afrr_mfrr_capacity_issue_time,
-            ),
         ]
         for raw_table, fact_table, value_column, issue_time_fn in source_specs:
             df = _read_raw(conn, raw_table)
@@ -208,6 +223,19 @@ def build_all_facts(config: PipelineConfig) -> list[FactBuildResult]:
         for fact_table, reserve_product, reserve_direction in _FCR_TARGETS:
             rows = _fcr_rows(fcr_df, config.zone, reserve_product, reserve_direction)
             count = write_table(conn, fact_table, rows, columns=fcr_columns)
+            results.append(FactBuildResult(table=fact_table, row_count=count))
+
+        afrr_mfrr_columns = {
+            "event_time": "TIMESTAMP",
+            "issue_time": "TIMESTAMP",
+            "price": "DOUBLE",
+        }
+        for raw_table, reserve_product, fact_table, reserve_direction in _AFRR_MFRR_TARGETS:
+            if not _table_exists(conn, raw_table):
+                continue
+            df = _read_raw(conn, raw_table)
+            rows = _afrr_mfrr_rows(df, config.zone, reserve_product, reserve_direction)
+            count = write_table(conn, fact_table, rows, columns=afrr_mfrr_columns)
             results.append(FactBuildResult(table=fact_table, row_count=count))
 
         imbalance_df = _read_raw(conn, "raw_esett_imbalance_price")

@@ -23,6 +23,10 @@ _SECONDARY_TARGETS = [
     ("fact_svk_fcr_d_up", "feature_fcr_d_up", "price", None),
     ("fact_svk_fcr_d_down", "feature_fcr_d_down", "price", None),
     ("fact_svk_fcr_n", "feature_fcr_n", "price", None),
+    ("fact_svk_afrr_up", "feature_afrr_up", "price", None),
+    ("fact_svk_afrr_down", "feature_afrr_down", "price", None),
+    ("fact_svk_mfrr_up", "feature_mfrr_up", "price", None),
+    ("fact_svk_mfrr_down", "feature_mfrr_down", "price", None),
     (
         "fact_imbalance_price",
         "feature_imbalance",

@@ -19,7 +19,10 @@ FACT_TABLES = [
     "fact_svk_fcr_d_up",
     "fact_svk_fcr_d_down",
     "fact_svk_fcr_n",
-    "fact_svk_afrr_mfrr_capacity",
+    "fact_svk_afrr_up",
+    "fact_svk_afrr_down",
+    "fact_svk_mfrr_up",
+    "fact_svk_mfrr_down",
     "fact_imbalance_price",
     "fact_smhi_observations",
     "fact_activation",
@@ -63,7 +66,30 @@ def _seed_across_spine(config: PipelineConfig, event_times: pd.DatetimeIndex) ->
         write_table(
             conn,
             "raw_svk_afrr_mfrr_capacity",
-            [{"start_time_utc": t, "price": 3.0} for t in iso_rows],
+            [
+                {
+                    "start_time_utc": t,
+                    "price": 3.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "aFRRCapacityMarket",
+                    "reserve_direction": "up",
+                }
+                for t in iso_rows
+            ],
+        )
+        write_table(
+            conn,
+            "raw_svk_mfrr_capacity",
+            [
+                {
+                    "start_time_utc": t,
+                    "price": 4.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "mFRRCapacityMarket",
+                    "reserve_direction": "up",
+                }
+                for t in iso_rows
+            ],
         )
         write_table(
             conn,
@@ -128,7 +154,19 @@ def test_imbalance_estimated_final_swap_resolves_at_t_plus_45(tmp_path: Path) ->
                 }
             ],
         )
-        write_table(conn, "raw_svk_afrr_mfrr_capacity", [{"start_time_utc": ts, "price": 3.0}])
+        write_table(
+            conn,
+            "raw_svk_afrr_mfrr_capacity",
+            [
+                {
+                    "start_time_utc": ts,
+                    "price": 3.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "aFRRCapacityMarket",
+                    "reserve_direction": "up",
+                }
+            ],
+        )
         write_table(
             conn,
             "raw_activation",

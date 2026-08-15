@@ -24,6 +24,10 @@ VALID_ROWS: dict[str, list[dict[str, object]]] = {
         {"start_time_utc": "2020-01-05T00:00:00", "price": 1.0},
         {"start_time_utc": "2020-01-06T00:00:00", "price": 2.0},
     ],
+    "raw_svk_mfrr_capacity": [
+        {"start_time_utc": "2020-01-05T00:00:00", "price": 1.0},
+        {"start_time_utc": "2020-01-06T00:00:00", "price": 2.0},
+    ],
     "raw_smhi_observations": [
         {"timestamp": 1578182400000, "value": 1.0},
         {"timestamp": 1578268800000, "value": 2.0},

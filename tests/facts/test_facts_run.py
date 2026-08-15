@@ -44,7 +44,22 @@ RAW_ROWS: dict[str, list[dict[str, object]]] = {
         },
     ],
     "raw_svk_afrr_mfrr_capacity": [
-        {"start_time_utc": "2024-01-15T00:00:00", "price": 3.0},
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 3.0,
+            "bidding_zone": "SE3",
+            "reserve_product": "aFRRCapacityMarket",
+            "reserve_direction": "up",
+        },
+    ],
+    "raw_svk_mfrr_capacity": [
+        {
+            "start_time_utc": "2024-01-15T00:00:00",
+            "price": 4.0,
+            "bidding_zone": "SE3",
+            "reserve_product": "mFRRCapacityMarket",
+            "reserve_direction": "up",
+        },
     ],
     "raw_activation": [
         {
@@ -112,7 +127,10 @@ def test_build_all_facts_writes_every_fact_table(tmp_path: Path) -> None:
         "fact_svk_fcr_d_up": 1,
         "fact_svk_fcr_d_down": 1,
         "fact_svk_fcr_n": 1,
-        "fact_svk_afrr_mfrr_capacity": 1,
+        "fact_svk_afrr_up": 1,
+        "fact_svk_afrr_down": 0,
+        "fact_svk_mfrr_up": 1,
+        "fact_svk_mfrr_down": 0,
         "fact_imbalance_price": 2,  # estimated + final per raw row
         "fact_smhi_observations": 1,
         "fact_activation": 2,

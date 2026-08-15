@@ -34,6 +34,22 @@ def _fcr_rows(iso_rows: list[str], zone: str) -> list[dict]:  # type: ignore[typ
     return rows
 
 
+def _afrr_mfrr_rows(iso_rows: list[str], zone: str, reserve_product: str) -> list[dict]:  # type: ignore[type-arg]
+    rows = []
+    for direction, price in (("up", 3.0), ("down", 3.5)):
+        rows.extend(
+            {
+                "start_time_utc": t,
+                "price": price,
+                "bidding_zone": zone,
+                "reserve_product": reserve_product,
+                "reserve_direction": direction,
+            }
+            for t in iso_rows
+        )
+    return rows
+
+
 def _seed(config: PipelineConfig) -> None:
     hours = pd.date_range("2025-01-01", "2025-03-01", freq="h", inclusive="left")
     iso_rows = [t.isoformat() for t in hours]
@@ -56,7 +72,12 @@ def _seed(config: PipelineConfig) -> None:
         write_table(
             conn,
             "raw_svk_afrr_mfrr_capacity",
-            [{"start_time_utc": t, "price": 3.0} for t in iso_rows],
+            _afrr_mfrr_rows(iso_rows, config.zone, "aFRRCapacityMarket"),
+        )
+        write_table(
+            conn,
+            "raw_svk_mfrr_capacity",
+            _afrr_mfrr_rows(iso_rows, config.zone, "mFRRCapacityMarket"),
         )
         write_table(
             conn,
@@ -100,6 +121,10 @@ def test_build_secondary_features_writes_one_table_per_target(tmp_path) -> None:
         "feature_fcr_d_up",
         "feature_fcr_d_down",
         "feature_fcr_n",
+        "feature_afrr_up",
+        "feature_afrr_down",
+        "feature_mfrr_up",
+        "feature_mfrr_down",
         "feature_imbalance",
     }
     assert all(r.row_count > 0 for r in results)

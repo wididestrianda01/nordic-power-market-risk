@@ -43,7 +43,10 @@ def _seed_empty_reserve_tables(config: PipelineConfig) -> None:
             "fact_svk_fcr_d_up",
             "fact_svk_fcr_d_down",
             "fact_svk_fcr_n",
-            "fact_svk_afrr_mfrr_capacity",
+            "fact_svk_afrr_up",
+            "fact_svk_afrr_down",
+            "fact_svk_mfrr_up",
+            "fact_svk_mfrr_down",
         ):
             write_table(
                 conn,
@@ -215,7 +218,7 @@ def _seed_reserve(config: PipelineConfig) -> None:
         )
         write_table(
             conn,
-            "fact_svk_afrr_mfrr_capacity",
+            "fact_svk_afrr_up",
             [{"event_time": datetime(2025, 1, 1, 2), "price": 5.0}],
         )
         write_table(

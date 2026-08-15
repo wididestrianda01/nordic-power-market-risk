@@ -70,7 +70,30 @@ def _seed(config: PipelineConfig, start: date, end: date) -> None:
         write_table(
             conn,
             "raw_svk_afrr_mfrr_capacity",
-            [{"start_time_utc": t, "price": 3.0} for t in iso_rows],
+            [
+                {
+                    "start_time_utc": t,
+                    "price": 3.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "aFRRCapacityMarket",
+                    "reserve_direction": "up",
+                }
+                for t in iso_rows
+            ],
+        )
+        write_table(
+            conn,
+            "raw_svk_mfrr_capacity",
+            [
+                {
+                    "start_time_utc": t,
+                    "price": 4.0,
+                    "bidding_zone": "SE3",
+                    "reserve_product": "mFRRCapacityMarket",
+                    "reserve_direction": "up",
+                }
+                for t in iso_rows
+            ],
         )
         write_table(
             conn,
