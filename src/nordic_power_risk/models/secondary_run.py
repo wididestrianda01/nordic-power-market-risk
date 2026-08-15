@@ -14,7 +14,7 @@ import pandas as pd
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.features.split import rolling_origin_folds
-from nordic_power_risk.ingest.duckdb_io import get_connection
+from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
 from nordic_power_risk.models.baselines import (
     quantile_forecast,
     residual_quantiles,
@@ -42,6 +42,13 @@ COVERAGE_LOWER_Q = 0.1
 COVERAGE_UPPER_Q = 0.9
 COVERAGE_ALPHA = 0.2
 MLFLOW_EXPERIMENT_SUFFIX = "-secondary-targets"
+IMBALANCE_FORECAST_COLUMNS = {
+    "issue_time": "TIMESTAMP",
+    "event_time": "TIMESTAMP",
+    "q0_1": "DOUBLE",
+    "q0_5": "DOUBLE",
+    "q0_9": "DOUBLE",
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,43 @@ def _forecast_seasonal_naive(
     return quantile_forecast(test_point, resid_q)
 
 
+def _optimizer_forecast_rows(
+    test: pd.DataFrame, quantile_preds: dict[float, pd.Series]
+) -> list[dict[str, object]]:
+    valid = pd.concat(quantile_preds.values(), axis=1).notna().all(axis=1)
+    return [
+        {
+            "issue_time": test.at[index, "issue_time"],
+            "event_time": test.at[index, "event_time"],
+            "q0_1": float(quantile_preds[0.1].at[index]),
+            "q0_5": float(quantile_preds[0.5].at[index]),
+            "q0_9": float(quantile_preds[0.9].at[index]),
+        }
+        for index in test.index[valid]
+    ]
+
+
+def _persist_imbalance_forecasts(
+    config: PipelineConfig, rows: list[dict[str, object]]
+) -> None:
+    unique = list(
+        {
+            (row["issue_time"], row["event_time"]): row
+            for row in rows
+        }.values()
+    )
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(
+            conn,
+            "forecast_imbalance",
+            unique,
+            columns=IMBALANCE_FORECAST_COLUMNS,
+        )
+    finally:
+        conn.close()
+
+
 def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]:
     conn = get_connection(config.duckdb_path)
     try:
@@ -86,6 +130,7 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
     mlflow.set_experiment(config.mlflow_experiment + MLFLOW_EXPERIMENT_SUFFIX)
 
     results: list[SecondaryRungResult] = []
+    optimizer_forecasts: list[dict[str, object]] = []
     for table, value_column in SECONDARY_TARGETS:
         df = tables[table]
         event_date = df["event_time"].dt.date
@@ -107,6 +152,10 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
                 "seasonal_naive": _forecast_seasonal_naive(train, test, value_column),
                 "lgbm": lgbm_quantile_forecast(train, test, value_column),
             }
+            if table == "feature_imbalance":
+                optimizer_forecasts.extend(
+                    _optimizer_forecast_rows(test, forecasts["lgbm"])
+                )
 
             for rung, quantile_preds in forecasts.items():
                 median = quantile_preds[0.5]
@@ -183,6 +232,7 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
                     metrics["dm_pvalue"] = result.dm_pvalue
                 mlflow.log_metrics(metrics)
 
+    _persist_imbalance_forecasts(config, optimizer_forecasts)
     return results
 
 

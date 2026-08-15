@@ -96,7 +96,7 @@ def models() -> None:
 
 @app.command()
 def optimize() -> None:
-    """Optimize energy dispatch from promoted day-ahead forecasts (Phase 3)."""
+    """Optimize fixed day-ahead energy and causal T-60 imbalance recourse."""
     from nordic_power_risk.optimize.run import run_energy_dispatch
 
     config = get_config()
@@ -107,7 +107,9 @@ def optimize() -> None:
         raise typer.Exit(1) from exc
     typer.echo(
         f"{result.table}: {result.row_count} rows, "
-        f"objective={result.objective_eur:.2f} EUR -> {config.duckdb_path}"
+        f"objective={result.objective_eur:.2f} EUR; "
+        f"{result.imbalance.table}: {result.imbalance.row_count} rows, "
+        f"objective={result.imbalance.objective_eur:.2f} EUR -> {config.duckdb_path}"
     )
 
 

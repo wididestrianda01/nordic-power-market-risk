@@ -169,3 +169,83 @@ def test_duration_must_be_finite(duration_hours: float) -> None:
 
     with pytest.raises(ValueError, match="finite and positive"):
         solve_energy_dispatch([forecast], DispatchConfig())
+
+
+def _imbalance_input(
+    *,
+    day_ahead_charge_mw: float,
+    day_ahead_discharge_mw: float,
+    forecast_price_eur_mwh: float | None,
+    issue_offset: timedelta | None = timedelta(),
+) -> object:
+    delivery_time = datetime(2025, 1, 2)
+    issue_time = (
+        None
+        if issue_offset is None
+        else delivery_time - timedelta(minutes=60) + issue_offset
+    )
+    return dispatch.ImbalanceDispatchInput(
+        delivery_time=delivery_time,
+        duration_hours=1.0,
+        day_ahead_charge_mw=day_ahead_charge_mw,
+        day_ahead_discharge_mw=day_ahead_discharge_mw,
+        forecast_issue_time=issue_time,
+        forecast_price_eur_mwh=forecast_price_eur_mwh,
+    )
+
+
+def test_favorable_imbalance_forecast_changes_only_actual_setpoint() -> None:
+    config = DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0)
+    dispatch_input = _imbalance_input(
+        day_ahead_charge_mw=1.0,
+        day_ahead_discharge_mw=0.0,
+        forecast_price_eur_mwh=1_000.0,
+    )
+
+    result = dispatch.solve_imbalance_dispatch([dispatch_input], config)
+    interval = result.intervals[0]
+
+    assert interval.day_ahead_charge_mw == pytest.approx(1.0)
+    assert interval.day_ahead_discharge_mw == pytest.approx(0.0)
+    assert interval.actual_charge_mw * interval.actual_discharge_mw == pytest.approx(
+        0.0, abs=1e-8
+    )
+    assert interval.actual_charge_mw <= config.power_limit_mw
+    assert interval.actual_discharge_mw <= config.power_limit_mw
+    assert interval.soc_mwh == pytest.approx(
+        config.initial_soc_mwh
+        + config.one_way_efficiency * interval.actual_charge_mw
+        - interval.actual_discharge_mw / config.one_way_efficiency,
+        abs=1e-8,
+    )
+    assert interval.imbalance_position_mw == pytest.approx(
+        interval.actual_discharge_mw
+        - interval.actual_charge_mw
+        - (interval.day_ahead_discharge_mw - interval.day_ahead_charge_mw)
+    )
+    assert interval.imbalance_position_mw > config.power_limit_mw
+
+
+@pytest.mark.parametrize(
+    "issue_offset",
+    [None, -timedelta(minutes=1), timedelta(minutes=1)],
+    ids=["missing", "stale", "late"],
+)
+def test_unavailable_imbalance_forecast_keeps_only_imbalance_leg_flat(
+    issue_offset: timedelta | None,
+) -> None:
+    dispatch_input = _imbalance_input(
+        day_ahead_charge_mw=0.5,
+        day_ahead_discharge_mw=0.0,
+        forecast_price_eur_mwh=None if issue_offset is None else 10_000.0,
+        issue_offset=issue_offset,
+    )
+
+    interval = dispatch.solve_imbalance_dispatch(
+        [dispatch_input],
+        DispatchConfig(initial_soc_mwh=1.0, terminal_value_eur_mwh=0.0),
+    ).intervals[0]
+
+    assert interval.imbalance_position_mw == pytest.approx(0.0)
+    assert interval.actual_charge_mw == pytest.approx(0.5)
+    assert interval.actual_discharge_mw == pytest.approx(0.0)
