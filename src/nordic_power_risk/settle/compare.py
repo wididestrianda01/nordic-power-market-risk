@@ -76,6 +76,22 @@ def compare_policies(config: PipelineConfig) -> ComparisonResult:
     round_trip_eff = battery.one_way_efficiency**2
     full_cycles = max(1, int(battery.energy_capacity_mwh / battery.power_limit_mw))
 
+    # Reserve capacity and activation are revenue the optimized policy realizes
+    # but the energy-arbitrage bound omits. With perfect foresight the asset
+    # captures at least the realized reserve on top of the perfect spread, so
+    # add it to keep the upper bound comparable to the co-optimized policy.
+    recon = reconcile(config)
+    reserve_revenue = recon.components.get("reserve_capacity", 0.0) + recon.components.get(
+        "reserve_activation", 0.0
+    )
+    energy_arbitrage = _daily_arbitrage(
+        days,
+        battery.power_limit_mw,
+        round_trip_eff,
+        battery.degradation_cost_eur_mwh,
+        full_cycles,
+    )
+
     policies = {
         "no_trade": 0.0,
         "heuristic": _daily_arbitrage(
@@ -85,14 +101,8 @@ def compare_policies(config: PipelineConfig) -> ComparisonResult:
             battery.degradation_cost_eur_mwh,
             1,
         ),
-        "perfect_foresight": _daily_arbitrage(
-            days,
-            battery.power_limit_mw,
-            round_trip_eff,
-            battery.degradation_cost_eur_mwh,
-            full_cycles,
-        ),
-        "optimized": reconcile(config).total_pnl_eur,
+        "perfect_foresight": energy_arbitrage + reserve_revenue,
+        "optimized": recon.total_pnl_eur,
     }
 
     rows = [{"policy": name, "total_pnl_eur": value} for name, value in policies.items()]

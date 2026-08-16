@@ -1,8 +1,8 @@
 """P&L attribution (Phase 4, ticket 08).
 
 Decomposes the gap between the realized paper policy and the perfect-foresight
-upper bound into forecast error, constraint cost, degradation, and unavailable
-reserve capacity. Components are signed to sum to the gap (attribution identity).
+upper bound into forecast error, constraint cost, and degradation. Components
+are signed to sum to the gap (attribution identity).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _forecast_objective(config: PipelineConfig) -> float:
 
 
 def attribute(config: PipelineConfig) -> AttributionResult:
-    """Attribute the perfect-foresight gap to four components summing to the gap."""
+    """Attribute the perfect-foresight gap to forecast error, constraint cost, and degradation."""
     comparison = compare_policies(config)
     recon = reconcile(config)
     optimized = comparison.policies["optimized"]
@@ -56,18 +56,16 @@ def attribute(config: PipelineConfig) -> AttributionResult:
 
     forecast_error = _forecast_objective(config) - optimized
     degradation = -recon.components.get("degradation", 0.0)
-    unavailable_reserve = recon.components.get("reserve_capacity", 0.0) + recon.components.get(
-        "reserve_activation", 0.0
-    )
-    # Residual: every effect not captured by forecast error, degradation, or
-    # unavailable reserve (physical constraint cost, unmodeled market frictions).
-    constraint_cost = gap - forecast_error - degradation - unavailable_reserve
+    # Reserve capacity/activation are already inside the perfect-foresight bound
+    # (compare.py), so they cancel out of the gap; no separate "unavailable
+    # reserve" term remains once the benchmark is co-optimized. The residual —
+    # physical constraint cost and unmodeled frictions — is constraint cost.
+    constraint_cost = gap - forecast_error - degradation
 
     components = {
         "forecast_error": forecast_error,
         "constraint_cost": constraint_cost,
         "degradation": degradation,
-        "unavailable_reserve": unavailable_reserve,
     }
     assert isclose(sum(components.values()), gap, abs_tol=1e-6)
 

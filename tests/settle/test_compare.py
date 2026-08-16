@@ -56,3 +56,42 @@ def test_compare_policies_orders_paper_above_no_trade_and_heuristic(tmp_path) ->
     # perfect foresight: buy [0,10], sell [90,100] -> eff*190 - 10 - 4*15
     assert result.policies["perfect_foresight"] == pytest.approx(eff * 190.0 - 70.0)
     assert result.policies["perfect_foresight"] >= result.policies["heuristic"]
+
+
+def test_perfect_foresight_stays_above_optimized_with_reserve_revenue(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _config(tmp_path)
+    _seed(config)
+    conn = get_connection(config.duckdb_path)
+    try:
+        write_table(
+            conn,
+            "settlement",
+            [
+                {
+                    "delivery_time": datetime(2025, 1, 1, 0),
+                    "component": "reserve_capacity",
+                    "value_eur": 500.0,
+                },
+                {
+                    "delivery_time": datetime(2025, 1, 1, 0),
+                    "component": "reserve_activation",
+                    "value_eur": 300.0,
+                },
+            ],
+            columns={
+                "delivery_time": "TIMESTAMP",
+                "component": "VARCHAR",
+                "value_eur": "DOUBLE",
+            },
+        )
+    finally:
+        conn.close()
+
+    result = compare_policies(config)
+
+    # Optimized books the realized reserve; perfect foresight must be an upper
+    # bound on top of it, not an energy-only figure that dips below it.
+    assert result.policies["optimized"] == pytest.approx(800.0)
+    assert result.policies["perfect_foresight"] > result.policies["optimized"]
