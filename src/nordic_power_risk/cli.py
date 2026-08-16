@@ -238,5 +238,30 @@ def promote() -> None:
         )
 
 
+@app.command()
+def bridge() -> None:
+    """Thesis-bridge analysis: MDE gate + pre/post imbalance-forecast difficulty (Phase 6)."""
+    from nordic_power_risk.bridge.run import run_thesis_bridge
+
+    config = get_config()
+    try:
+        result = run_thesis_bridge(config)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(
+        f"bridge: framing={result.framing}, "
+        f"MDE={result.gate.mde:.4f} (sigma={result.gate.sigma:.4f}), "
+        f"n_pre={result.gate.n_pre}, n_post={result.gate.n_post}"
+    )
+    typer.echo(
+        f"difficulty: pre pinball={result.pre.pinball_loss_lgbm:.4f}, "
+        f"post pinball={result.post.pinball_loss_lgbm:.4f}, "
+        f"effect={result.effect_pinball:+.4f} "
+        f"(detected={result.effect_detected})"
+    )
+    typer.echo(f"chapter: {result.chapter_path}")
+
+
 if __name__ == "__main__":
     app()
