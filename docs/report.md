@@ -75,12 +75,43 @@ The **reserve markets** compensate assets for standing ready. FCR-N and FCR-D st
 frequency. aFRR and mFRR restore frequency after a disturbance. Each product has its own
 gate closure and settlement rule.
 
+Frequency must stay at 50 Hz. When generation does not equal load, frequency moves. A
+cascade of products brings it back, ordered from fastest to slowest:
+
+- **FCR** (frequency containment reserve) is the fastest automatic response. FCR-N keeps
+  frequency inside the normal band in both directions. FCR-D handles larger downward
+  deviations, when frequency falls and the asset must inject power. Both activate within
+  seconds and hold for minutes. FCR-N is symmetric; FCR-D is one-directional.
+- **aFRR** (automatic frequency restoration reserve) restores frequency to 50 Hz after FCR
+  has contained the deviation. It activates within minutes and is automatic.
+- **mFRR** (manual frequency restoration reserve) is manual and slower. It frees up aFRR so
+  aFRR is ready for the next disturbance. It activates within 15 minutes.
+
+The names describe the job: contain, restore automatically, restore manually. The three
+products carry different activation times and different value, which is why the optimizer
+treats them separately rather than as one reserve pool.
+
 ### 2.2 Roles
 
-A BRP carries balance responsibility. It is financially responsible for its deviations.
-The independent balance service provider (BSP) model has been rolling out since May 2024.
-eSett is the Nordic settlement operator, owned equally by the four transmission system
-operators (TSOs).
+A **bidding zone** is a geographic area where one price clears. There is no internal
+congestion, so every point in the zone trades at the same price. Sweden is split into four
+zones; SE3 is the Stockholm zone. Prices differ between zones only when the lines between
+them congest.
+
+The **TSO** (transmission system operator) runs the high-voltage grid and keeps it
+balanced. For Sweden this is Svenska kraftnät (SvK). The TSO buys reserve products and
+settles imbalances.
+
+A **BRP** (balance responsible party) is financially responsible for its deviations. If it
+delivers less than contracted, it buys the shortfall; if more, it sells the surplus. The
+project's battery is a BRP.
+
+A **BSP** (balance service provider) supplies reserve and balancing energy. One legal
+entity can be both BRP and BSP. The independent BSP model has been rolling out since May
+2024.
+
+**eSett** is the Nordic settlement operator, owned equally by the four TSOs. It settles
+imbalances and reserve across the region.
 
 ### 2.3 Settlement and price formation
 
@@ -93,6 +124,14 @@ activation. The dominating direction comes from the TSO's proactive mFRR forecas
 not from realized activation. This is a non-obvious mechanic and central to why imbalance
 is hard to forecast.
 
+A concrete case makes the single-price rule clear. On 9 November 2021 at 12:00 the
+imbalance price was 60 EUR/MWh. A BRP short by 1 MWh pays 60 EUR. A BRP long by 1 MWh
+receives 60 EUR. The same price applies to both directions.
+
+A dual-price scheme would split this. The short BRP would pay a higher "buy" price and the
+long BRP would receive a lower "sell" price; the spread between the two is the penalty for
+imbalance. The Nordic system removed that spread on 1 November 2021 and moved to one
+symmetric price, so a BRP now faces a single number whether it is short or long.
 ### 2.4 The 15-minute transition
 
 The market time unit moved from 60 to 15 minutes in stages:
@@ -162,9 +201,12 @@ backtest can run "as of" any information time.
 
 ### 3.3 Storage
 
-DuckDB is the storage engine. A batch pipeline does not need a running server, which rules
-out Postgres. Raw parquet has no query layer for manifest and decision-log joins. DuckDB
-reads parquet natively and matches the zero-operations, local-only shape of the project.
+DuckDB is the storage engine. It is an embedded analytical database: a single-file,
+columnar, in-process engine that speaks SQL and reads parquet directly. There is no server
+to run and no client to configure, which rules out Postgres for a batch pipeline that runs
+once and quits. Raw parquet has no query layer for the manifest and decision-log joins the
+project needs. DuckDB gives SQL over those files in place, which matches the
+zero-operations, local-only shape of the project.
 
 ### 3.4 Stage order
 
@@ -214,14 +256,42 @@ Targets are tiered by data depth, not one-size-fits-all:
 
 ### 4.2 The benchmark ladder
 
-The ladder is naive (random walk), seasonal-naive at t-168h, LEAR, and a deep neural
-network. `epftoolbox` (Lago et al. 2021) is the reference implementation.
+A benchmark ladder is a set of simple models that a challenger must beat before it is
+worth its complexity. If a complex model cannot beat a one-line baseline, the baseline
+wins on simplicity. The ladder here has four rungs:
+
+- **Naive** (random walk): the price now equals the price 24 hours ago. It is the floor
+  any model must clear.
+- **Seasonal-naive**: the price now equals the price 168 hours (7 days) ago. It captures
+  the weekly shape of power prices.
+- **LEAR** (Lasso Estimated AutoRegressive): a linear autoregressive model whose
+  coefficients are chosen by the Lasso, an L1 penalty. The Lasso keeps the lags and
+  calendar features that carry signal and drives the rest to zero. The result is a sparse
+  linear model: interpretable, fast, and strong on short noisy series. `epftoolbox` (Lago
+  et al. 2021) is the reference implementation.
+- **DNN** (deep neural network): a nonlinear baseline. It can beat linear models but needs
+  more data to do so reliably.
+
+The ladder is not a contest to pick the most complex model. It proves, with a significance
+test, that the promoted model earns its complexity.
 
 ### 4.3 Probabilistic output
 
-The day-ahead target uses a 9-point quantile grid {0.1 to 0.9} plus a tail extension
-{0.01, 0.05, 0.95, 0.99}. The tails exist for the CVaR gate in Section 5. Secondary
-targets use a 3-point grid {0.1, 0.5, 0.9}.
+A point forecast gives one number. A probabilistic forecast gives a distribution, or a set
+of quantiles of it. The project needs quantiles, not a single point, because the risk gate
+in Section 5 needs the tail of the distribution, not just its center.
+
+**Quantile regression** models a chosen quantile of the target directly. Ordinary least
+squares fits the mean. A quantile objective fits, for example, the 0.9 quantile: it weights
+over-prediction and under-prediction differently, so the fitted line lands where 90 percent
+of the data sits below it. A LightGBM with a quantile objective fits one model per
+quantile. Running it over the grid {0.1 to 0.9} plus the tails {0.01, 0.05, 0.95, 0.99}
+produces a discrete picture of the predictive distribution, which is what the CVaR gate
+samples from.
+
+The grid is tiered to match the target. The primary day-ahead target uses the 9-point grid
+plus the tails; the secondary targets use a 3-point grid {0.1, 0.5, 0.9}; the tertiary
+targets are point forecasts only.
 
 ![Quantile forecast fan](figures/quantile_forecast_fan.png)
 
@@ -236,9 +306,28 @@ coverage, and Winkler score are logged as diagnostics, never the gate. A DM test
 aFRR/mFRR-thin data would be theater, so secondary and tertiary metrics are logged and
 reported, never gated.
 
+**Pinball loss** measures a quantile forecast and is asymmetric. For a forecast of
+quantile tau and a realized value y, a forecast q that lands below y costs tau times the
+error, and a forecast that lands above y costs (1 - tau) times the error. The asymmetry is
+the point: a 0.9 quantile forecast should sit high and be punished more for landing below
+the realization than above it.
+
+A worked case. On 3 April 2025 at 12:00 the median (0.5) forecast was 5.12 EUR/MWh and the
+realized day-ahead price was -5.10 EUR/MWh, a negative-price hour the model missed. At the
+median the error is 5.12 minus (-5.10), or 10.22, and the pinball loss is (1 - 0.5) times
+10.22, or 5.11. For the same hour the 0.9 forecast was 40.42; its error is 40.42 minus
+(-5.10), or 45.52, and its loss is (1 - 0.9) times 45.52, or 4.55. The 0.1 forecast was
+-24.34; the realization of -5.10 sits above it, so its loss is 0.1 times 19.24, or 1.92.
+Averaging these over the grid and over the holdout gives the single promotion metric.
+
+**Diebold-Mariano** tests whether one forecast is significantly better than another. It
+takes the loss difference between the two forecasts at each observation and tests whether
+the mean difference is zero. A significant nonzero mean says the gap is not sampling noise.
+
 On the frozen holdout, LEAR won the ladder and was promoted: average pinball 6.66 against
-7.67 for naive, 9.90 for seasonal-naive, and 6.75 for the deep network, with a
-Diebold-Mariano statistic of -17.4 against naive (p < 0.0001, n = 7,985).
+7.67 for naive, 9.90 for seasonal-naive, and 6.75 for the deep network. The Diebold-Mariano
+statistic of -17.4 against naive (p < 0.0001, n = 7,985) says the 6.66 against 7.67 gap is
+real, not luck.
 
 ![Pinball loss ladder](figures/pinball_ladder.png)
 
@@ -268,9 +357,20 @@ issue-time cutoff column enforces this in the temporal join.
 
 ### 5.1 The dispatch problem
 
-A rolling MILP dispatches a 1 to 7 day horizon. Pyomo models it; HiGHS solves it. A
-96-interval day solves in under two seconds. A full-year monolith is not attempted because
-a rolling horizon with a terminal value handles the scale without going infeasible.
+**What a linear program is.** A linear program (LP) minimizes or maximizes a linear
+objective over a set of linear constraints. The variables are continuous. A solver finds
+the exact optimum quickly, so an LP over thousands of variables is routine.
+
+**What the mixed-integer part adds.** Some decisions are all-or-nothing. A battery cannot
+charge and discharge in the same interval; it must pick one. That choice is a binary
+variable, 0 or 1. A mixed-integer linear program (MILP) is an LP with some integer or
+binary variables. The integers make the worst case harder, but HiGHS solves the project's
+96-interval day in under two seconds.
+
+The dispatch runs as a rolling horizon of 1 to 7 days: Pyomo models each window, HiGHS
+solves it, and only the first day is committed before the window slides forward. A
+full-year monolith is not attempted because a rolling horizon with a terminal value handles
+the scale without going infeasible.
 
 The objective maximizes expected paper revenue minus degradation and reserve costs. The
 terminal value uses a linear absolute-value penalty through two auxiliary non-negative
@@ -286,6 +386,15 @@ mandatory, not relaxed. Swedish zones see negative day-ahead prices. Under a neg
 price, a relaxed binary produces a physically impossible schedule that charges and
 discharges at the same time. The invariant test suite force-replays the known
 negative-price hours and asserts the binary is never relaxed in both directions at once.
+
+A worked case shows why the binary matters. The objective earns the day-ahead price on the
+net position (discharge minus charge) and pays degradation on the throughput (discharge
+plus charge). If charge and discharge were both allowed in one hour, the battery could
+charge 1 MW and discharge 1 MW at the same time. The net position is zero, so no price is
+earned, but the throughput is 2 MWh, so degradation is paid twice: a pure loss. Under a
+negative price the sign flips and the battery appears to earn the negative price on a
+net-zero position, a phantom profit with no energy moved. The binary forbids both at once,
+so each hour is exactly one of charge, discharge, or idle.
 
 ![Dispatch on a negative-price day](figures/dispatch_negative_price.png)
 
@@ -345,7 +454,7 @@ marked.*
 
 Every paper position settles against the applicable observed price and product rule. Day-
 ahead energy settles at the day-ahead price. Imbalance settles at the single imbalance
-price. Conditionally accepted reserve capacity settles at the forecast reserve price, and
+price. Conditionally accepted reserve capacity settles at the observed reserve price, and
 activated energy settles against observed activation.
 
 ### 6.2 Reconciliation and attribution
@@ -356,6 +465,22 @@ imbalance, published fees, the degradation-throughput assumption, and reserve co
 Attribution measures the gap to the perfect-foresight upper bound and splits it into
 forecast error, constraint cost, the degradation assumption, and unavailable or unaccepted
 reserve capacity.
+
+Attribution answers one question: why does the optimized policy fall short of perfect
+foresight? Perfect foresight knows every price in advance and captures every arbitrage
+spread exactly. The optimized policy forecasts prices, so it misses some spreads and pays
+degradation. The gap splits into named causes:
+
+- **Forecast error**: the money lost because the forecast was wrong. A perfect forecast
+  captures the spread; a wrong one buys high or sells low.
+- **Constraint cost**: the money lost to physical limits, the reserve commitment, and the
+  risk gate. Reserve capacity ties up power that could otherwise arbitrage.
+- **Degradation**: the declared throughput cost of cycling the battery.
+- **Unavailable reserve**: reserve capacity that was not accepted, or activation that could
+  not be delivered.
+
+The waterfall orders these causes so each explains the residual of the one above it, down
+to the net paper P&L. The parts sum to the gap, which is the reconciliation check.
 
 ![P&L attribution waterfall](figures/pnl_attribution_waterfall.png)
 
@@ -426,6 +551,12 @@ imbalance-price forecast difficulty. The transition was EU-wide and simultaneous
 untransitioned control zone exists for a difference-in-differences design. The design is an
 interrupted time series on SE3's own series, before and after 1 October 2025.
 
+An interrupted time series fits a trend to one series and asks whether that trend changes
+at a known point in time, the interruption. Here the interruption is 1 October 2025, the
+first day of 15-minute day-ahead delivery. The design has no control group, so it cannot
+separate the transition from other events in the same window; that is why the framing stays
+descriptive.
+
 The measured variable is forecast difficulty, not price volatility. It compares the
 imbalance secondary-target error (pinball loss, CRPS) on hourly-aggregated pre-period data
 against native 15-minute post-period data. This ties the bridge to the project's own
@@ -435,11 +566,13 @@ The framing is descriptive and quasi-experimental, not a strong causal claim. Co
 confounders in the same window cannot be ruled out, and the report says so.
 
 A minimum-detectable-effect calculation runs before the analysis. It uses the pre-period
-variance from the 7.5-year backtest against the roughly 10-month post-period sample. If the
-effect is large enough to be policy-relevant, the chapter proceeds as a caveated
-inferential exhibit. If the post-period is underpowered, the chapter is reframed upfront
-as a methodology demonstration. This decision is made once, before the analysis runs, not
-after seeing the result.
+variance from the 7.5-year backtest against the roughly 10-month post-period sample.
+
+A minimum detectable effect is the smallest effect the sample could reliably detect, given
+its size and the noise in the series. If the observed effect is smaller than the MDE, the
+sample is underpowered and the chapter is reframed as a methodology demonstration. If it is
+larger, the chapter proceeds as an inferential exhibit. The rule is fixed before the
+analysis runs, so the choice is not made after seeing the result.
 
 The analysis ran and detected the effect. Imbalance-forecast pinball rose from 15.36 in the
 pre-period to 19.99 in the post-period, an increase of 4.63 against a minimum-detectable
@@ -459,40 +592,81 @@ This section gives full treatment to the two concepts the headline result depend
 
 ### 9.1 CVaR and coherent risk measures
 
-Value at Risk (VaR) at level alpha is the alpha-quantile of a loss distribution. It is
-widely used but is not coherent. It can fail subadditivity: the VaR of a combined position
-can exceed the sum of the VaRs of its parts, which contradicts diversification.
+**Value at Risk (VaR)** at level alpha is the alpha-quantile of a loss distribution. For a
+loss X, VaR_alpha(X) is the smallest loss x such that the probability of losing more than x
+is at most (1 - alpha). In the project it is the 99th percentile of the simulated daily
+losses.
 
-Conditional Value at Risk (CVaR), also called expected shortfall, is the expected loss
-given that the loss exceeds VaR. For a continuous loss distribution it is the average of
-the worst (1 - alpha) tail. CVaR is coherent: it satisfies monotonicity, translation
-invariance, positive homogeneity, and subadditivity.
+VaR is widely used but is not a coherent risk measure. It can fail **subadditivity**: the
+VaR of a combined position can exceed the sum of the VaRs of its parts, which contradicts
+diversification.
+
+**Conditional Value at Risk (CVaR)**, also called expected shortfall, is the expected loss
+given that the loss is at or above VaR:
+
+    CVaR_alpha(X) = E[X | X >= VaR_alpha(X)]
+
+For a continuous loss distribution this is the mean of the worst (1 - alpha) fraction of
+the tail.
+
+A risk measure is **coherent** if it satisfies four axioms for any two losses X and Y:
+
+- **Monotonicity**: if X is never larger than Y, then rho(X) <= rho(Y). A position that
+  always loses less has lower risk.
+- **Translation invariance**: rho(X + c) = rho(X) + c. Adding a sure loss c raises the risk
+  by exactly c.
+- **Positive homogeneity**: rho(lambda * X) = lambda * rho(X) for lambda >= 0. Scaling a
+  position scales its risk.
+- **Subadditivity**: rho(X + Y) <= rho(X) + rho(Y). Combining two positions cannot raise
+  risk above the sum of the parts; this is the diversification property.
+
+VaR fails subadditivity. CVaR satisfies all four.
+
+A worked case. Suppose ten daily losses, sorted smallest to largest, are 1, 2, 2, 3, 3, 4,
+5, 6, 9, 40 EUR. The 90 percent VaR is 9 EUR: nine of ten days lost at most 9 EUR. The
+90 percent CVaR is the mean of the losses at or above that threshold, the mean of 9 and 40,
+or 24.5 EUR. VaR marks the edge of the tail; CVaR measures how bad the tail is on average.
+A realized daily loss of 30 EUR would exceed the 24.5 EUR CVaR and breach the gate, while a
+loss of 9 EUR would not.
 
 The project computes CVaR from the quantile-forecast tail by historical simulation, not
 from a fitted normal. At the 99 percent level, CVaR is the mean of the simulated losses in
-the worst 1 percent of the tail. A breach means the realized daily loss exceeds the
-training-window 99th-percentile simulated loss, recalibrated at each monthly re-fit.
+the worst 1 percent. A breach means the realized daily loss exceeds the training-window
+99th-percentile simulated loss, recalibrated at each monthly re-fit.
 
 ### 9.2 Probabilistic forecast metrics
 
-**Pinball loss** is the standard loss for a quantile forecast. For a quantile tau and an
-observed value y, the loss of a forecast q is tau times the positive error when y exceeds
-q, and (1 - tau) times the negative error otherwise. It rewards the forecast for being at
-the right quantile, not merely close. Averaging pinball loss over the quantile grid gives
-the single promotion metric.
+**Pinball loss** is the standard loss for a quantile forecast. For a forecast q of quantile
+tau and a realization y:
 
-**CRPS** (continuous ranked probability score) is the integral of the squared error over
-all quantiles. It measures the full predictive distribution against the observation and
-reduces to mean absolute error for a point forecast. It is a diagnostic here, not the gate.
+    L_tau(q, y) = tau * (y - q)      if y >= q
+                = (1 - tau) * (q - y)  if y < q
+
+The two cases collapse into one line: L_tau(q, y) = max(tau * (y - q), (tau - 1) * (y - q)).
+The asymmetry is the point. A 0.9 quantile forecast is punished more for being too low: if
+the realization lands above it, the loss is 0.9 times the miss; if it lands below, the loss
+is only 0.1 times the miss. This pushes the forecast up to where 90 percent of the data
+sits below it. Averaging pinball loss over the quantile grid gives the single promotion
+metric.
+
+**CRPS** (continuous ranked probability score) is the integral of the squared error between
+the predictive cumulative distribution F and the observation, over all thresholds:
+
+    CRPS(F, y) = integral of (F(z) - 1[z >= y])^2 dz
+
+It measures the full predictive distribution against the observation and reduces to mean
+absolute error for a point forecast. It is a diagnostic here, not the gate.
 
 **Quantile regression** models the conditional quantile of the target directly, without
 assuming a distribution. A LightGBM with a quantile objective fits one model per quantile.
-The 9-point grid plus tail extension is a discrete approximation of the predictive
-distribution, which is what CVaR needs.
+The grid plus tail extension is a discrete approximation of the predictive distribution,
+which is what CVaR needs.
 
-**Diebold-Mariano** is the significance test for forecast comparison. It tests whether the
-mean loss differential between two forecasts is zero. A significant result against
-seasonal-naive is the precondition for promoting a challenger.
+**Diebold-Mariano** is the significance test for forecast comparison. It forms the loss
+difference between two forecasts at each observation, takes the mean d, and normalizes it
+by its standard error. Under the null that both forecasts are equally accurate, the
+statistic is asymptotically standard normal. A significant result against seasonal-naive is
+the precondition for promoting a challenger.
 
 ---
 
@@ -535,6 +709,44 @@ Every material decision traces to a wayfinder ticket. This table is the index.
 The honest next step for a production-shaped version is to add intraday continuous
 trading, to source a rejected-bid or full-curve feed for reserve acceptance, and to extend
 the post-transition window as more 15-minute history accumulates.
+
+---
+
+## 11. Glossary
+
+| Term | Definition |
+|---|---|
+| Bidding zone | A geographic area where one price clears because there is no internal congestion. SE3 is the Stockholm zone. |
+| TSO | Transmission system operator. Runs the high-voltage grid and keeps it balanced. For Sweden this is Svenska kraftnät (SvK). |
+| BRP | Balance responsible party. Financially responsible for its deviations from its schedule. |
+| BSP | Balance service provider. Supplies reserve and balancing energy. |
+| Day-ahead market (SDAC) | The daily auction where participants bid for delivery the next day. Clears one price per interval. |
+| Intraday market (SIDC) | Continuous trading after day-ahead closes, up to one hour before delivery. |
+| Imbalance settlement (ISP) | The reconciliation of a BRP's physical position against its contracted position, settled at the imbalance price. |
+| Single-price settlement | One imbalance price applies to all BRPs, short or long. Replaced the dual-price scheme on 1 November 2021. |
+| FCR | Frequency containment reserve. The fastest automatic response that contains a frequency deviation. |
+| FCR-N | Symmetric FCR that keeps frequency in the normal band in both directions. |
+| FCR-D | One-directional FCR that handles larger downward frequency deviations. |
+| aFRR | Automatic frequency restoration reserve. Restores frequency to 50 Hz after FCR contains the deviation. |
+| mFRR | Manual frequency restoration reserve. Frees up aFRR for the next disturbance. |
+| FFR | Fast frequency reserve. A very fast reserve excluded here because it is an annual contract. |
+| SoC | State of charge. The stored energy in the battery, in MWh. |
+| MILP | Mixed-integer linear program. A linear program with some integer or binary variables. |
+| Binary exclusivity | The constraint that the battery charges or discharges, never both at once. |
+| VaR | Value at risk. The alpha-quantile of a loss distribution. |
+| CVaR | Conditional value at risk, or expected shortfall. The mean loss in the worst tail. |
+| Coherent risk measure | A risk measure that satisfies monotonicity, translation invariance, positive homogeneity, and subadditivity. |
+| Pinball loss | The standard loss for a quantile forecast, asymmetric around the quantile. |
+| CRPS | Continuous ranked probability score. Measures the full predictive distribution against an observation. |
+| Quantile regression | Models a chosen quantile of the target directly instead of the mean. |
+| Diebold-Mariano test | A significance test for whether one forecast is better than another. |
+| LEAR | Lasso Estimated AutoRegressive. A sparse linear autoregressive forecast with an L1 penalty. |
+| Walk-forward | A rolling evaluation where the model refits on a growing window and predicts the next step. |
+| Perfect foresight | An upper bound that assumes every price is known in advance. A ceiling, not a target. |
+| Heuristic | A simple rule-based benchmark policy. |
+| Interrupted time series | Fits a trend to one series and tests whether it changes at a known interruption point. |
+| Minimum detectable effect | The smallest effect a sample can reliably detect, given its size and noise. |
+| Look-ahead | Using information that was not yet available at the decision time. A defensible backtest forbids it. |
 
 ---
 
