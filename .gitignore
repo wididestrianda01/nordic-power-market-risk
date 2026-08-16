@@ -17,6 +17,8 @@ htmlcov/
 data/
 *.duckdb
 manifest.json
+mlruns/
+mlflow.db
 
 # Agent tooling / local scratch (not needed to replicate this project)
 .claude/

@@ -40,7 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
+      - name: Build the batch image
+        run: docker build -t nordic-risk:smoke .
+      - name: Smoke test the batch image in-container
+        run: |
+          docker run --rm nordic-risk:smoke --help
+          docker run --rm nordic-risk:smoke monitor

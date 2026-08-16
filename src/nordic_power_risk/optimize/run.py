@@ -15,7 +15,12 @@ from nordic_power_risk.facts.rules import (
     delivery_day,
     imbalance_forecast_issue_time,
 )
-from nordic_power_risk.ingest.duckdb_io import coerce_datetime, get_connection, write_table
+from nordic_power_risk.ingest.duckdb_io import (
+    coerce_datetime,
+    fetch_scalar,
+    get_connection,
+    write_table,
+)
 from nordic_power_risk.optimize.dispatch import (
     DispatchForecast,
     DispatchInterval,
@@ -152,9 +157,11 @@ def _imbalance_price(row: dict[str, Any]) -> float | None:
 def _read_imbalance_forecast_rows(config: PipelineConfig) -> list[dict[str, Any]]:
     conn = get_connection(config.duckdb_path)
     try:
-        exists = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_imbalance'"
-        ).fetchone()[0]
+        exists = fetch_scalar(
+            conn,
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_name = 'forecast_imbalance'",
+        )
         if not exists:
             return []
         cursor = conn.execute("SELECT * FROM forecast_imbalance")
@@ -205,9 +212,11 @@ def _validate_reserve_forecast_columns(columns: list[str]) -> None:
 def _read_reserve_forecast_rows(config: PipelineConfig) -> list[dict[str, Any]]:
     conn = get_connection(config.duckdb_path)
     try:
-        exists = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_reserve'"
-        ).fetchone()[0]
+        exists = fetch_scalar(
+            conn,
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_name = 'forecast_reserve'",
+        )
         if not exists:
             return []
         cursor = conn.execute("SELECT * FROM forecast_reserve")
@@ -373,12 +382,12 @@ def _rolling_events(
 ) -> list[tuple[datetime, str, list[Any]]]:
     """Merge energy and balancing gates into one chronological issue-time sequence."""
     events: list[tuple[datetime, str, list[Any]]] = []
-    ordered = sorted(energy, key=lambda item: (item.issue_time, item.delivery_time))
-    for issue_time, grouped in groupby(ordered, key=lambda item: item.issue_time):
-        events.append((issue_time, "energy", list(grouped)))
-    ordered = sorted(balancing, key=lambda item: (item.issue_time, item.delivery_time))
-    for issue_time, grouped in groupby(ordered, key=lambda item: item.issue_time):
-        events.append((issue_time, "balancing", list(grouped)))
+    energy_ordered = sorted(energy, key=lambda item: (item.issue_time, item.delivery_time))
+    for issue_time, energy_group in groupby(energy_ordered, key=lambda item: item.issue_time):
+        events.append((issue_time, "energy", list(energy_group)))
+    balancing_ordered = sorted(balancing, key=lambda item: (item.issue_time, item.delivery_time))
+    for issue_time, balancing_group in groupby(balancing_ordered, key=lambda item: item.issue_time):
+        events.append((issue_time, "balancing", list(balancing_group)))
     events.sort(key=lambda event: (event[0], event[1] != "balancing"))
     return events
 
@@ -613,7 +622,7 @@ def _persist_rows(
         conn.close()
 
 
-def _imbalance_result(rows: list[dict[str, object]], row_count: int) -> ImbalanceRunResult:
+def _imbalance_result(rows: list[dict[str, Any]], row_count: int) -> ImbalanceRunResult:
     forecast_value = sum(float(row["forecast_value_eur"]) for row in rows)
     degradation = sum(float(row["degradation_cost_eur"]) for row in rows)
     terminal = sum(float(row["terminal_value_eur"]) for row in rows)
@@ -627,7 +636,7 @@ def _imbalance_result(rows: list[dict[str, object]], row_count: int) -> Imbalanc
     )
 
 
-def _reserve_result(rows: list[dict[str, object]], row_count: int) -> ReserveRunResult:
+def _reserve_result(rows: list[dict[str, Any]], row_count: int) -> ReserveRunResult:
     return ReserveRunResult(
         table="dispatch_reserve",
         row_count=row_count,
@@ -636,7 +645,7 @@ def _reserve_result(rows: list[dict[str, object]], row_count: int) -> ReserveRun
 
 
 def _result(
-    rows: list[dict[str, object]],
+    rows: list[dict[str, Any]],
     row_count: int,
     imbalance: ImbalanceRunResult,
     reserve: ReserveRunResult,

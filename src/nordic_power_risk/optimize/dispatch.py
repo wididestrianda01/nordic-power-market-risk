@@ -265,7 +265,8 @@ def _add_energy_reserve_constraints(
             <= (config.power_limit_mw - headroom[i].reserved_up_mw) * (1 - m.is_charging[i])
         ),
     )
-    start_soc = lambda m, i: config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
+    def start_soc(m: Any, i: int) -> Any:
+        return config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
     model.reserve_start_minimum = pyo.Constraint(
         model.intervals, rule=lambda m, i: start_soc(m, i) >= headroom[i].minimum_soc_mwh
     )
@@ -455,13 +456,22 @@ def _add_balancing_constraints(
     forecasts: Sequence[ReserveForecast],
     config: DispatchConfig,
 ) -> None:
-    up = lambda m, i: sum(m.capacity[j] for j in rows[i] if forecasts[j].direction == "up")
-    down = lambda m, i: sum(m.capacity[j] for j in rows[i] if forecasts[j].direction == "down")
-    start = lambda m, i: config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
-    minimum = lambda m, i: _balancing_requirement(m, rows[i], forecasts, "up", config)
-    maximum = lambda m, i: (
-        config.energy_capacity_mwh - _balancing_requirement(m, rows[i], forecasts, "down", config)
-    )
+    def up(m: Any, i: int) -> Any:
+        return sum(m.capacity[j] for j in rows[i] if forecasts[j].direction == "up")
+
+    def down(m: Any, i: int) -> Any:
+        return sum(m.capacity[j] for j in rows[i] if forecasts[j].direction == "down")
+
+    def start(m: Any, i: int) -> Any:
+        return config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
+
+    def minimum(m: Any, i: int) -> Any:
+        return _balancing_requirement(m, rows[i], forecasts, "up", config)
+
+    def maximum(m: Any, i: int) -> Any:
+        return config.energy_capacity_mwh - _balancing_requirement(
+            m, rows[i], forecasts, "down", config
+        )
     model.exclusive = pyo.Constraint(
         model.intervals, rule=lambda m, i: sum(m.capacity[j] for j in rows[i]) <= 1
     )
@@ -651,8 +661,11 @@ def _add_reserve_energy_constraints(
     config: DispatchConfig,
 ) -> None:
     start_soc = _energy_start_soc(energy, config)
-    minimum = lambda m, i: _reserve_minimum_soc(m, i, forecasts, config)
-    maximum = lambda m, i: _reserve_maximum_soc(m, i, forecasts, config)
+    def minimum(m: Any, i: int) -> Any:
+        return _reserve_minimum_soc(m, i, forecasts, config)
+
+    def maximum(m: Any, i: int) -> Any:
+        return _reserve_maximum_soc(m, i, forecasts, config)
     model.start_minimum_soc = pyo.Constraint(
         model.rows,
         rule=lambda m, i: (

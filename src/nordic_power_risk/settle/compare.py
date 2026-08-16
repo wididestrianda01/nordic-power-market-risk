@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.facts.rules import delivery_day
@@ -29,7 +29,10 @@ class ComparisonResult:
 def _read_day_ahead_prices(config: PipelineConfig) -> list[dict[str, Any]]:
     conn = get_connection(config.duckdb_path)
     try:
-        return conn.execute("SELECT * FROM fact_day_ahead_price").fetchdf().to_dict("records")
+        return cast(
+            list[dict[str, Any]],
+            conn.execute("SELECT * FROM fact_day_ahead_price").fetchdf().to_dict("records"),
+        )
     finally:
         conn.close()
 

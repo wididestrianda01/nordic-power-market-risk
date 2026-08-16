@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "duckdb>=1.5.5",
+    "evidently>=0.7.21",
     "highspy>=1.15.1",
     "holidays>=0.87",
     "lightgbm>=4.5",
@@ -75,6 +76,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "lightgbm.*"
 ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = "evidently.*"
+ignore_missing_imports = true
+
 
 [[tool.mypy.overrides]]
 module = "pyomo.*"

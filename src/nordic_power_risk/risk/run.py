@@ -349,7 +349,7 @@ class RiskEvaluator:
         if any(not isfinite(value) or value < lower or value > upper for value in medians):
             return self._blocked(intervals, "bid_sanity", metrics=metrics, loss_limit=loss_limit)
 
-        active_reason = self.state.gate_reason(delivery_day, loss_limit)
+        active_reason = self.state.gate_reason(delivery_date, loss_limit)
         if active_reason is not None:
             return self._blocked(intervals, active_reason, metrics=metrics, loss_limit=loss_limit)
         if cvar_99 > loss_limit:

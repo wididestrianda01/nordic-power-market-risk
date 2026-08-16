@@ -47,9 +47,17 @@ def coerce_datetime(value: object) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
-def coerce_float(value: object) -> float:
+def coerce_float(value: Any) -> float:
     """Return `value` as a float; a missing (None) cell coerces to NaN, not zero."""
     return nan if value is None else float(value)
+
+
+def fetch_scalar(
+    conn: duckdb.DuckDBPyConnection, query: str, params: list[Any] | None = None
+) -> Any:
+    """Return the first column of the first row, or None if the query returns no rows."""
+    row = conn.execute(query, params or []).fetchone()
+    return row[0] if row is not None else None
 
 
 def read_table(config: PipelineConfig, table: str) -> list[dict[str, Any]]:

@@ -336,7 +336,8 @@ def test_optimizer_forecast_tables_replace_atomically(
         names = {
             row[0]
             for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'forecast_%'"
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name LIKE 'forecast_%'"
             ).fetchall()
         }
         if preexisting:

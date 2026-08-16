@@ -89,8 +89,8 @@ def _imbalance_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for interval in imbalance_rows:
         delivery = coerce_datetime(interval["delivery_time"])
-        price = final_prices.get(delivery, estimated_prices.get(delivery))
-        if price is None or not isfinite(price):
+        settled_price = final_prices.get(delivery, estimated_prices.get(delivery))
+        if settled_price is None or not isfinite(settled_price):
             continue
         duration = coerce_float(interval["duration_hours"])
         position = coerce_float(interval["imbalance_position_mw"])
@@ -98,7 +98,7 @@ def _imbalance_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
             {
                 "delivery_time": delivery,
                 "component": "imbalance",
-                "value_eur": energy_value(price, position, duration),
+                "value_eur": energy_value(settled_price, position, duration),
             }
         )
         rows.append(

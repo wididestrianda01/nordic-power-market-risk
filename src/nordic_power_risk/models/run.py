@@ -29,6 +29,7 @@ from nordic_power_risk.models.metrics import (
     pit_values,
     winkler_score,
 )
+from nordic_power_risk.models.registry import DAY_AHEAD_MODEL, register_forecast
 
 FoldForecaster = Callable[[pd.DataFrame, pd.DataFrame], tuple[pd.Series, pd.Series]]
 
@@ -158,8 +159,9 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
     mlflow.set_experiment(config.mlflow_experiment)
+    run_ids: dict[str, str] = {}
     for result in results:
-        with mlflow.start_run(run_name=result.rung):
+        with mlflow.start_run(run_name=result.rung) as run:
             mlflow.log_metrics(
                 {
                     "n_obs": result.n_obs,
@@ -182,6 +184,7 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
                     ),
                 }
             )
+            run_ids[result.rung] = run.info.run_id
 
     if results:
         best = select_best_rung(results)
@@ -191,7 +194,9 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
                 write_table(conn, "forecast_day_ahead", forecast_records[best.rung])
             finally:
                 conn.close()
-
+        register_forecast(
+            DAY_AHEAD_MODEL, run_ids[best.rung], best.rung, forecast_records[best.rung]
+        )
     return results
 
 

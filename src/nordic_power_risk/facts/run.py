@@ -20,7 +20,7 @@ from nordic_power_risk.facts.rules import (
     fcr_capacity_issue_time,
     reserve_volume_issue_time,
 )
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.duckdb_io import fetch_scalar, get_connection, write_table
 from nordic_power_risk.validate.schemas import RAW_TABLE_TIMESTAMP_COLUMNS
 
 # smhi stores epoch-millisecond ints; every other raw table stores ISO 8601 strings.
@@ -44,10 +44,10 @@ def _read_raw(conn: duckdb.DuckDBPyConnection, table: str) -> pd.DataFrame:
 
 
 def _table_exists(conn: duckdb.DuckDBPyConnection, table: str) -> bool:
-    count = conn.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
-    ).fetchone()[0]
-    return count > 0
+    count = fetch_scalar(
+        conn, "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
+    )
+    return bool(count)
 
 
 def _price_rows(

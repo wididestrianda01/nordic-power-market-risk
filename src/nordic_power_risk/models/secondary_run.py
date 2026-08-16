@@ -7,7 +7,9 @@ to reporting pinball loss and diagnostics only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
+import duckdb
 import mlflow
 import numpy as np
 import pandas as pd
@@ -15,7 +17,7 @@ import pandas as pd
 from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.facts.rules import afrr_mfrr_capacity_issue_time
 from nordic_power_risk.features.split import rolling_origin_folds
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.duckdb_io import fetch_scalar, get_connection, write_table
 from nordic_power_risk.models.baselines import (
     quantile_forecast,
     residual_quantiles,
@@ -104,15 +106,15 @@ def _forecast_seasonal_naive(
 
 def _optimizer_forecast_rows(
     test: pd.DataFrame, quantile_preds: dict[float, pd.Series]
-) -> list[dict[str, object]]:
+) -> list[dict[str, Any]]:
     valid = pd.concat(quantile_preds.values(), axis=1).notna().all(axis=1)
     return [
         {
             "issue_time": test.at[index, "issue_time"],
             "event_time": test.at[index, "event_time"],
-            "q0_1": float(quantile_preds[0.1].at[index]),
-            "q0_5": float(quantile_preds[0.5].at[index]),
-            "q0_9": float(quantile_preds[0.9].at[index]),
+            "q0_1": float(cast(float, quantile_preds[0.1].at[index])),
+            "q0_5": float(cast(float, quantile_preds[0.5].at[index])),
+            "q0_9": float(cast(float, quantile_preds[0.9].at[index])),
         }
         for index in test.index[valid]
     ]
@@ -120,7 +122,7 @@ def _optimizer_forecast_rows(
 
 def _reserve_forecast_rows(
     table: str, test: pd.DataFrame, quantile_preds: dict[float, pd.Series]
-) -> list[dict[str, object]]:
+) -> list[dict[str, Any]]:
     product, direction = RESERVE_TARGETS[table]
     rows = _optimizer_forecast_rows(test, quantile_preds)
     return [
@@ -139,14 +141,14 @@ def _reserve_forecast_rows(
 
 
 def _unique_imbalance_forecasts(
-    rows: list[dict[str, object]],
-) -> list[dict[str, object]]:
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return list({(row["issue_time"], row["event_time"]): row for row in rows}.values())
 
 
 def _unique_reserve_forecasts(
-    rows: list[dict[str, object]],
-) -> list[dict[str, object]]:
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return list(
         {
             (row["product"], row["direction"], row["issue_time"], row["delivery_time"]): row
@@ -156,9 +158,9 @@ def _unique_reserve_forecasts(
 
 
 def _write_optimizer_forecasts(
-    conn: object,
-    imbalance_rows: list[dict[str, object]],
-    reserve_rows: list[dict[str, object]],
+    conn: duckdb.DuckDBPyConnection,
+    imbalance_rows: list[dict[str, Any]],
+    reserve_rows: list[dict[str, Any]],
 ) -> None:
     write_table(
         conn,
@@ -176,8 +178,8 @@ def _write_optimizer_forecasts(
 
 def _persist_optimizer_forecasts(
     config: PipelineConfig,
-    imbalance_rows: list[dict[str, object]],
-    reserve_rows: list[dict[str, object]],
+    imbalance_rows: list[dict[str, Any]],
+    reserve_rows: list[dict[str, Any]],
 ) -> None:
     conn = get_connection(config.duckdb_path)
     reserve_rows.extend(
@@ -197,7 +199,7 @@ def _persist_optimizer_forecasts(
 
 def _tertiary_rows(
     table: str, frame: pd.DataFrame
-) -> tuple[list[dict[str, object]], TertiaryForecastResult]:
+) -> tuple[list[dict[str, Any]], TertiaryForecastResult]:
     if frame.empty:
         # SE3 may have no procured aFRR/mFRR in one direction -> empty feature table.
         return [], TertiaryForecastResult(
@@ -215,11 +217,11 @@ def _tertiary_rows(
             "product": product,
             "direction": direction,
             "issue_time": afrr_mfrr_capacity_issue_time(
-                frame.at[index, "event_time"].to_pydatetime()
+                cast(pd.Timestamp, frame.at[index, "event_time"]).to_pydatetime()
             ),
             "delivery_time": frame.at[index, "event_time"],
             "q0_1": None,
-            "q0_5": float(frame.at[index, "price_lag_168h"]),
+            "q0_5": float(cast(float, frame.at[index, "price_lag_168h"])),
             "q0_9": None,
             "forecast_source": forecast_source(product),
         }
@@ -236,10 +238,12 @@ def _tertiary_rows(
     )
 
 
-def _existing_reserves(conn: object) -> list[dict[str, object]]:
-    exists = conn.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'forecast_reserve'"
-    ).fetchone()[0]
+def _existing_reserves(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+    exists = fetch_scalar(
+        conn,
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name = 'forecast_reserve'",
+    )
     if not exists:
         return []
     cursor = conn.execute("SELECT * FROM forecast_reserve")
@@ -247,11 +251,11 @@ def _existing_reserves(conn: object) -> list[dict[str, object]]:
     return [dict(zip(columns, values, strict=True)) for values in cursor.fetchall()]
 
 
-def _existing_non_tertiary_reserves(conn: object) -> list[dict[str, object]]:
+def _existing_non_tertiary_reserves(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
     return [row for row in _existing_reserves(conn) if row.get("product") not in {"AFRR", "MFRR"}]
 
 
-def _write_tertiary_forecasts(conn: object, rows: list[dict[str, object]]) -> None:
+def _write_tertiary_forecasts(conn: duckdb.DuckDBPyConnection, rows: list[dict[str, Any]]) -> None:
     conn.execute("BEGIN TRANSACTION")
     try:
         write_table(
@@ -304,8 +308,8 @@ def run_secondary_benchmark(config: PipelineConfig) -> list[SecondaryRungResult]
     mlflow.set_experiment(config.mlflow_experiment + MLFLOW_EXPERIMENT_SUFFIX)
 
     results: list[SecondaryRungResult] = []
-    optimizer_forecasts: list[dict[str, object]] = []
-    reserve_forecasts: list[dict[str, object]] = []
+    optimizer_forecasts: list[dict[str, Any]] = []
+    reserve_forecasts: list[dict[str, Any]] = []
     for table, value_column in SECONDARY_TARGETS:
         df = tables[table]
         event_date = df["event_time"].dt.date

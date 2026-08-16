@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from math import isclose
 
 from nordic_power_risk.config import PipelineConfig
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.ingest.duckdb_io import fetch_scalar, get_connection, write_table
 from nordic_power_risk.settle.compare import compare_policies
 from nordic_power_risk.settle.run import reconcile
 
@@ -28,10 +28,9 @@ class AttributionResult:
 def _read_sum(config: PipelineConfig, table: str, column: str) -> float:
     conn = get_connection(config.duckdb_path)
     try:
-        row = conn.execute(f"SELECT COALESCE(SUM({column}), 0.0) FROM {table}").fetchone()
+        return float(fetch_scalar(conn, f"SELECT COALESCE(SUM({column}), 0.0) FROM {table}"))
     finally:
         conn.close()
-    return float(row[0])
 
 
 def _forecast_objective(config: PipelineConfig) -> float:

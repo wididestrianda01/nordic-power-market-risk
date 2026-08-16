@@ -25,11 +25,6 @@ def ingest() -> None:
         typer.echo(f"{entry.name}: {entry.row_count} rows -> {config.duckdb_path}")
 
 
-def _not_implemented(stage: str) -> None:
-    typer.echo(f"nordic-risk {stage}: not implemented yet (Phase 0 is ingest-only)", err=True)
-    raise typer.Exit(1)
-
-
 @app.command()
 def validate() -> None:
     """Pandera schema validation of every raw_* table (Phase 1)."""
@@ -111,17 +106,19 @@ def models() -> None:
     typer.echo(f"promoted: {best.rung} (pinball={best.pinball_loss:.4f})")
 
     secondary_results = run_secondary_benchmark(config)
-    for result in secondary_results:
+    for secondary in secondary_results:
         typer.echo(
-            f"{result.target}/{result.rung} (n={result.n_obs}): "
-            f"pinball={result.pinball_loss:.4f} crps={result.crps:.4f} "
-            f"coverage_80={result.coverage_80:.3f} "
-            f"winkler_80={result.winkler_80:.4f} pit_mean={result.pit_mean:.3f}"
+            f"{secondary.target}/{secondary.rung} (n={secondary.n_obs}): "
+            f"pinball={secondary.pinball_loss:.4f} crps={secondary.crps:.4f} "
+            f"coverage_80={secondary.coverage_80:.3f} "
+            f"winkler_80={secondary.winkler_80:.4f} pit_mean={secondary.pit_mean:.3f}"
         )
 
     tertiary_results = run_tertiary_forecast(config)
-    for result in tertiary_results:
-        typer.echo(f"{result.target}/{result.source} (n={result.n_obs}): mae={result.mae:.4f}")
+    for tertiary in tertiary_results:
+        typer.echo(
+            f"{tertiary.target}/{tertiary.source} (n={tertiary.n_obs}): mae={tertiary.mae:.4f}"
+        )
 
 
 @app.command()
@@ -197,14 +194,48 @@ def settle() -> None:
 
 @app.command()
 def monitor() -> None:
-    """Drift and performance monitoring (Phase 5)."""
-    _not_implemented("monitor")
+    """Drift and performance monitoring report (Phase 5)."""
+    from nordic_power_risk.monitor.run import run_monitoring
+
+    result = run_monitoring(get_config())
+    typer.echo(
+        f"monitor: missingness={result.missingness}, "
+        f"mae={result.forecast_mae}, coverage_80={result.interval_coverage_80}, "
+        f"pnl={result.realized_pnl_eur}, max_drawdown={result.max_drawdown_eur}, "
+        f"breaches={result.breach_count}, failures={result.optimizer_failures}, "
+        f"latency_h={result.data_latency_hours}, drift_share={result.drift_share} "
+        f"-> {result.summary_path}"
+    )
+
+
+@app.command()
+def rollback() -> None:
+    """Revert the champion alias to the previous registered version (Phase 5)."""
+    from nordic_power_risk.models.registry import DAY_AHEAD_MODEL, rollback_champion
+
+    config = get_config()
+    version = rollback_champion(DAY_AHEAD_MODEL, config.mlflow_tracking_uri)
+    typer.echo(f"rolled back: champion -> v{version}")
 
 
 @app.command()
 def promote() -> None:
-    """Model promotion gate (Phase 5)."""
-    _not_implemented("promote")
+    """Promote the newest challenger if it clears the DM-significance gate (Phase 5)."""
+    from nordic_power_risk.models.promote import promote_champion
+    from nordic_power_risk.models.registry import DAY_AHEAD_MODEL
+
+    config = get_config()
+    result = promote_champion(DAY_AHEAD_MODEL, config.mlflow_tracking_uri)
+    if result.promoted:
+        typer.echo(
+            f"promoted: v{result.challenger_version} -> champion "
+            f"(now v{result.champion_version}): {result.reason}"
+        )
+    else:
+        typer.echo(
+            f"retained: champion v{result.champion_version}; "
+            f"challenger v{result.challenger_version} rejected: {result.reason}"
+        )
 
 
 if __name__ == "__main__":
