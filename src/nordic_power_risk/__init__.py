@@ -1,2 +1,1 @@
-def hello() -> str:
-    return "Hello from nordic_power_risk!"
+"""Nordic power-market decision and risk system (SE3)."""
