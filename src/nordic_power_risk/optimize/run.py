@@ -436,8 +436,8 @@ def _reserve_headroom(
     for delivery_time, grouped in groupby(ordered, key=lambda item: item.delivery_time):
         rows = list(grouped)
         result[delivery_time] = (
-            min(config.power_limit_mw, sum(row.reserved_up_mw for row in rows)),
-            min(config.power_limit_mw, sum(row.reserved_down_mw for row in rows)),
+            max(0.0, min(config.power_limit_mw, sum(row.reserved_up_mw for row in rows))),
+            max(0.0, min(config.power_limit_mw, sum(row.reserved_down_mw for row in rows))),
             max(row.minimum_soc_mwh for row in rows),
             min(row.maximum_soc_mwh for row in rows),
         )

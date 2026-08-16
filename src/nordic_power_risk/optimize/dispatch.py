@@ -28,6 +28,8 @@ FCR_D_FULL_ACTIVATION_HOURS = 1.0 / 3.0
 FCR_N_FULL_ACTIVATION_HOURS = 1.0
 AFRR_FULL_ACTIVATION_HOURS = 1.0
 MFRR_FULL_ACTIVATION_HOURS = 0.5
+FLAT_DEVIATION_PENALTY_EUR_MWH = 1e6
+RESERVE_SOC_VIOLATION_PENALTY_EUR_MWH = 100.0
 
 
 @dataclass(frozen=True)
@@ -267,17 +269,24 @@ def _add_energy_reserve_constraints(
     )
     def start_soc(m: Any, i: int) -> Any:
         return config.initial_soc_mwh + 0 * m.soc[i] if i == 0 else m.soc[i - 1]
+    model.reserve_soc_violation = pyo.Var(model.intervals, domain=pyo.NonNegativeReals)
     model.reserve_start_minimum = pyo.Constraint(
-        model.intervals, rule=lambda m, i: start_soc(m, i) >= headroom[i].minimum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: start_soc(m, i) + m.reserve_soc_violation[i]
+        >= headroom[i].minimum_soc_mwh,
     )
     model.reserve_end_minimum = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.soc[i] >= headroom[i].minimum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: m.soc[i] + m.reserve_soc_violation[i] >= headroom[i].minimum_soc_mwh,
     )
     model.reserve_start_maximum = pyo.Constraint(
-        model.intervals, rule=lambda m, i: start_soc(m, i) <= headroom[i].maximum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: start_soc(m, i) - m.reserve_soc_violation[i]
+        <= headroom[i].maximum_soc_mwh,
     )
     model.reserve_end_maximum = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.soc[i] <= headroom[i].maximum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: m.soc[i] - m.reserve_soc_violation[i] <= headroom[i].maximum_soc_mwh,
     )
 
 
@@ -301,7 +310,16 @@ def _add_objective(
     model.terminal_value = pyo.Expression(
         expr=config.terminal_value_eur_mwh * model.soc[len(forecasts) - 1]
     )
-    objective = model.energy_revenue - model.degradation_cost + model.terminal_value
+    model.reserve_penalty = pyo.Expression(
+        expr=RESERVE_SOC_VIOLATION_PENALTY_EUR_MWH
+        * sum(model.reserve_soc_violation[i] for i in model.intervals)
+    )
+    objective = (
+        model.energy_revenue
+        - model.degradation_cost
+        + model.terminal_value
+        - model.reserve_penalty
+    )
     model.objective = pyo.Objective(expr=objective, sense=pyo.maximize)
 
 
@@ -317,11 +335,16 @@ def _solve_model(model: Any) -> str:
     return str(termination)
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    """Clamp HiGHS floating-point artifacts (tiny violations at a variable bound) into range."""
+    return min(max(value, lower), upper)
+
+
 def _interval_values(
     model: Any, forecast: DispatchForecast, index: int, config: DispatchConfig
 ) -> tuple[float, float, float, float]:
-    charge = float(pyo.value(model.charge[index]))
-    discharge = float(pyo.value(model.discharge[index]))
+    charge = _clamp(float(pyo.value(model.charge[index])), 0.0, config.power_limit_mw)
+    discharge = _clamp(float(pyo.value(model.discharge[index])), 0.0, config.power_limit_mw)
     duration = forecast.duration_hours
     energy_revenue = energy_value(forecast.price_eur_mwh, discharge - charge, duration)
     degradation_cost = config.degradation_cost_eur_mwh * (charge + discharge) * duration
@@ -341,7 +364,7 @@ def _extract_interval(
         duration_hours=forecast.duration_hours,
         charge_mw=charge,
         discharge_mw=discharge,
-        soc_mwh=float(pyo.value(model.soc[index])),
+        soc_mwh=_clamp(float(pyo.value(model.soc[index])), 0.0, config.energy_capacity_mwh),
         energy_revenue_eur=energy_revenue,
         degradation_cost_eur=degradation_cost,
         terminal_value_eur=terminal_value,
@@ -916,17 +939,24 @@ def _add_imbalance_reserve_soc_constraints(
     model.start_soc = pyo.Expression(
         model.intervals, rule=lambda m, i: _imbalance_start_soc(m, i, config)
     )
+    model.reserve_soc_violation = pyo.Var(model.intervals, domain=pyo.NonNegativeReals)
     model.start_minimum_reserve_soc = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.start_soc[i] >= inputs[i].minimum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: m.start_soc[i] + m.reserve_soc_violation[i]
+        >= inputs[i].minimum_soc_mwh,
     )
     model.start_maximum_reserve_soc = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.start_soc[i] <= _maximum_soc(inputs[i], config)
+        model.intervals,
+        rule=lambda m, i: m.start_soc[i] - m.reserve_soc_violation[i]
+        <= _maximum_soc(inputs[i], config),
     )
     model.minimum_reserve_soc = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.soc[i] >= inputs[i].minimum_soc_mwh
+        model.intervals,
+        rule=lambda m, i: m.soc[i] + m.reserve_soc_violation[i] >= inputs[i].minimum_soc_mwh,
     )
     model.maximum_reserve_soc = pyo.Constraint(
-        model.intervals, rule=lambda m, i: m.soc[i] <= _maximum_soc(inputs[i], config)
+        model.intervals,
+        rule=lambda m, i: m.soc[i] - m.reserve_soc_violation[i] <= _maximum_soc(inputs[i], config),
     )
 
 
@@ -935,10 +965,20 @@ def _imbalance_position(model: Any, index: int, inputs: Sequence[ImbalanceDispat
     return model.discharge[index] - model.charge[index] - commitment
 
 
-def _flat_imbalance(model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
-    if _eligible_imbalance_price(inputs[index]) is not None:
+def _is_flat_interval(index: int, inputs: Sequence[ImbalanceDispatchInput]) -> bool:
+    return _eligible_imbalance_price(inputs[index]) is None
+
+
+def _flat_lower_bound(model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
+    if not _is_flat_interval(index, inputs):
         return pyo.Constraint.Skip
-    return model.imbalance_position[index] == 0.0
+    return model.imbalance_position[index] + model.flat_deviation[index] >= 0.0
+
+
+def _flat_upper_bound(model: Any, index: int, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
+    if not _is_flat_interval(index, inputs):
+        return pyo.Constraint.Skip
+    return model.flat_deviation[index] - model.imbalance_position[index] >= 0.0
 
 
 def _imbalance_forecast_value(model: Any, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
@@ -969,8 +1009,20 @@ def _add_imbalance_objective(
     model.terminal_value = pyo.Expression(
         expr=config.terminal_value_eur_mwh * model.soc[len(inputs) - 1]
     )
+    model.flat_penalty = pyo.Expression(
+        expr=FLAT_DEVIATION_PENALTY_EUR_MWH
+        * sum(model.flat_deviation[i] * inputs[i].duration_hours for i in model.intervals)
+    )
+    model.reserve_penalty = pyo.Expression(
+        expr=RESERVE_SOC_VIOLATION_PENALTY_EUR_MWH
+        * sum(model.reserve_soc_violation[i] for i in model.intervals)
+    )
     model.objective = pyo.Objective(
-        expr=model.forecast_value - model.degradation_cost + model.terminal_value,
+        expr=model.forecast_value
+        - model.degradation_cost
+        + model.terminal_value
+        - model.flat_penalty
+        - model.reserve_penalty,
         sense=pyo.maximize,
     )
 
@@ -985,8 +1037,12 @@ def _add_imbalance_constraints(
         model.intervals, rule=lambda m, i: _imbalance_soc_balance(m, i, inputs, config)
     )
     _add_imbalance_reserve_soc_constraints(model, inputs, config)
-    model.flat_unavailable = pyo.Constraint(
-        model.intervals, rule=lambda m, i: _flat_imbalance(m, i, inputs)
+    model.flat_deviation = pyo.Var(model.intervals, domain=pyo.NonNegativeReals)
+    model.flat_lower = pyo.Constraint(
+        model.intervals, rule=lambda m, i: _flat_lower_bound(m, i, inputs)
+    )
+    model.flat_upper = pyo.Constraint(
+        model.intervals, rule=lambda m, i: _flat_upper_bound(m, i, inputs)
     )
 
 

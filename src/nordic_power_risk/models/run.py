@@ -89,10 +89,18 @@ def run_benchmark_ladder(config: PipelineConfig) -> list[RungResult]:
     for fold in folds:
         train = df[(event_date >= fold.train_start) & (event_date < fold.train_end)]
         test = df[(event_date >= fold.test_start) & (event_date < fold.test_end)]
-        for name, forecaster in RUNGS.items():
-            train_point, test_point = forecaster(train, test)
-            valid = test_point.notna() & test["price_eur_mwh"].notna()
-            if not valid.any() or train_point.notna().sum() == 0:
+        predictions = {name: forecaster(train, test) for name, forecaster in RUNGS.items()}
+        # One valid mask across all rungs so every loss series covers the same
+        # observations; the Diebold-Mariano test needs equal-length series.
+        valid = test["price_eur_mwh"].notna()
+        for _, (train_point, test_point) in predictions.items():
+            if train_point.notna().sum() > 0:
+                valid = valid & test_point.notna()
+        if not valid.any():
+            continue
+
+        for name, (train_point, test_point) in predictions.items():
+            if train_point.notna().sum() == 0:
                 continue
 
             resid_q = residual_quantiles(train["price_eur_mwh"], train_point)

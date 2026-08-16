@@ -18,12 +18,18 @@ from typing import Any
 
 import requests
 
-from nordic_power_risk.ingest.entsoe import ZONE_EIC
+from nordic_power_risk.ingest.entsoe import ZONE_EIC, chunk_date_range
 
 BASE_URL = "https://api.opendata.esett.com/EXP14/Prices"
 
 # eSett publishes no imbalance price for some intervals, using -1.0 as a sentinel.
 MISSING_PRICE_SENTINEL = -1.0
+
+# Single-price imbalance regime began 1 Nov 2021; EXP14 holds no single imbalance
+# price before that date. EXP14 also caps rows per request (~100k), so a 15-minute
+# series longer than ~2.8 years overflows one call; fetch in 1-year chunks.
+SINGLE_PRICE_START = date(2021, 11, 1)
+ESETT_CHUNK_DAYS = 365
 
 
 def _utc_datetime(value: date) -> str:
@@ -31,17 +37,21 @@ def _utc_datetime(value: date) -> str:
     return f"{value.isoformat()}T00:00:00.000Z"
 
 
-def fetch_imbalance_prices(zone: str, start: date, end: date, *, timeout: float = 30.0) -> bytes:
-    """Raw JSON response for the single imbalance price over [start, end)."""
-    params = {
-        "start": _utc_datetime(start),
-        "end": _utc_datetime(end),
-        "mba": ZONE_EIC[zone],
-    }
-    response = requests.get(BASE_URL, params=params, timeout=timeout)
-    response.raise_for_status()
-    return response.content
-
+def fetch_imbalance_prices(
+    zone: str, start: date, end: date, *, timeout: float = 30.0
+) -> list[bytes]:
+    """Raw JSON responses for the single imbalance price over [start, end), in 1-year chunks."""
+    raw_chunks: list[bytes] = []
+    for chunk_start, chunk_end in chunk_date_range(start, end, max_days=ESETT_CHUNK_DAYS):
+        params = {
+            "start": _utc_datetime(chunk_start),
+            "end": _utc_datetime(chunk_end),
+            "mba": ZONE_EIC[zone],
+        }
+        response = requests.get(BASE_URL, params=params, timeout=timeout)
+        response.raise_for_status()
+        raw_chunks.append(response.content)
+    return raw_chunks
 
 def parse_imbalance_prices(raw: bytes) -> list[dict[str, Any]]:
     """JSON rows -> [{"timestamp": naive-UTC iso str, "imbalance_price_eur_mwh": float}]."""

@@ -9,6 +9,13 @@ from math import isfinite
 
 import numpy as np
 
+DRAWDOWN_LIMIT_MULTIPLIER = 20.0
+
+
+def _drawdown_limit(loss_limit_eur: float) -> float:
+    """Separate cumulative-drawdown limit, a multiple of the daily loss limit."""
+    return DRAWDOWN_LIMIT_MULTIPLIER * loss_limit_eur
+
 
 def _finite_values(values: Sequence[float], name: str) -> np.ndarray:
     result = np.asarray(values, dtype=float)
@@ -99,7 +106,9 @@ class RiskState:
         self.cumulative_pnl_eur -= realized_loss_eur
         self.peak_pnl_eur = max(self.peak_pnl_eur, self.cumulative_pnl_eur)
         self.drawdown_eur = self.peak_pnl_eur - self.cumulative_pnl_eur
-        breached = realized_loss_eur > loss_limit_eur or self.drawdown_eur > loss_limit_eur
+        breached = realized_loss_eur > loss_limit_eur or self.drawdown_eur > _drawdown_limit(
+            loss_limit_eur
+        )
         if breached:
             self.start_cooldown(observed_on)
         return breached
@@ -107,7 +116,7 @@ class RiskState:
     def gate_reason(self, delivery_day: date, loss_limit_eur: float) -> str | None:
         if self.cooldown_until is not None and delivery_day < self.cooldown_until:
             return "cooldown"
-        if self.drawdown_eur > loss_limit_eur:
+        if self.drawdown_eur > _drawdown_limit(loss_limit_eur):
             return "drawdown_limit"
         return None
 

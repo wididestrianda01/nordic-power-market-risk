@@ -297,8 +297,14 @@ def parse_imbalance_volumes(raw: bytes) -> list[dict[str, Any]]:
     point is MWh; aggregated to hourly MWh (numerically the hourly average MW) to
     match the hourly dispatch spine.
     """
-    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        xml_docs = [archive.read(n) for n in archive.namelist() if n.endswith(".xml")]
+    if raw[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            xml_docs = [archive.read(n) for n in archive.namelist() if n.endswith(".xml")]
+    else:
+        # No-data chunks come back as a plain-XML acknowledgement with no
+        # TimeSeries (A86 imbalance volume only exists from Mar 2025), so treat
+        # the bytes as a single XML document that parses to no rows.
+        xml_docs = [raw]
 
     up: dict[datetime, float] = {}
     down: dict[datetime, float] = {}

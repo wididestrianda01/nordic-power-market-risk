@@ -210,3 +210,10 @@ def test_parse_imbalance_volumes_aggregates_15m_to_hourly_mfrr():
             "activated_mw": 11.0,
         },
     ]
+
+
+def test_parse_imbalance_volumes_handles_plain_xml_no_data():
+    # A no-data chunk is a plain-XML acknowledgement with no TimeSeries (A86
+    # imbalance volume only exists from Mar 2025), not a ZIP.
+    no_data = b'<?xml version="1.0" encoding="UTF-8"?><Acknowledgement_MarketDocument/>'
+    assert parse_imbalance_volumes(no_data) == []

@@ -20,7 +20,7 @@ SAMPLE_JSON = json.dumps(
 def test_fetch_imbalance_prices_uses_eic_and_utc_datetimes():
     responses.add(responses.GET, BASE_URL, body=SAMPLE_JSON, status=200)
     raw = fetch_imbalance_prices("SE3", date(2026, 1, 1), date(2026, 1, 2))
-    assert raw == SAMPLE_JSON
+    assert raw == [SAMPLE_JSON]
     request = responses.calls[0].request
     assert request.params["mba"] == "10Y1001A1001A46L"
     assert request.params["start"] == "2026-01-01T00:00:00.000Z"

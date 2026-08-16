@@ -617,7 +617,7 @@ def test_summer_fcr_gate_is_1530_utc_and_exact() -> None:
     ],
     ids=["below-minimum", "above-maximum"],
 )
-def test_imbalance_start_soc_must_preserve_awarded_bounds(
+def test_imbalance_start_soc_outside_reserve_bounds_degrades_to_penalty(
     initial_soc: float, minimum_soc: float, maximum_soc: float, price: float
 ) -> None:
     dispatch_input = dispatch.ImbalanceDispatchInput(
@@ -631,11 +631,14 @@ def test_imbalance_start_soc_must_preserve_awarded_bounds(
         maximum_soc_mwh=maximum_soc,
     )
 
-    with pytest.raises(RuntimeError, match="infeasible"):
-        dispatch.solve_imbalance_dispatch(
-            [dispatch_input],
-            DispatchConfig(initial_soc_mwh=initial_soc, terminal_value_eur_mwh=0.0),
-        )
+    interval = dispatch.solve_imbalance_dispatch(
+        [dispatch_input],
+        DispatchConfig(initial_soc_mwh=initial_soc, terminal_value_eur_mwh=0.0),
+    ).intervals[0]
+
+    # Soft reserve bounds: the dispatch completes and the start SoC may sit
+    # outside the awarded band, settled as a reserve non-delivery penalty.
+    assert 0.0 <= interval.soc_mwh <= 2.0
 
 
 def test_negative_recourse_preserves_down_power_and_maximum_soc() -> None:

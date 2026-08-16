@@ -42,6 +42,9 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
         )
         rows = [row for raw in raw_chunks for row in entsoe.parse_day_ahead_prices(raw)]
         rows = [r for r in rows if _in_window_date(r["timestamp"], start, end)]
+        # ENTSO-E A44 chunk boundaries overlap by one delivery interval, so the
+        # same timestamp arrives in two adjacent chunks. Dedupe by timestamp.
+        rows = list({r["timestamp"]: r for r in rows}.values())
         row_count = write_table(conn, "raw_entsoe_day_ahead_price", rows)
         entries.append(
             make_entry(
@@ -55,17 +58,18 @@ def ingest_all(config: PipelineConfig, settings: Settings) -> list[ManifestEntry
             )
         )
 
-        raw = esett.fetch_imbalance_prices(config.zone, start, end)
-        rows = esett.parse_imbalance_prices(raw)
+        imbalance_start = max(start, esett.SINGLE_PRICE_START)
+        raw_chunks = esett.fetch_imbalance_prices(config.zone, imbalance_start, end)
+        rows = [row for raw in raw_chunks for row in esett.parse_imbalance_prices(raw)]
         row_count = write_table(conn, "raw_esett_imbalance_price", rows)
         entries.append(
             make_entry(
                 name="esett_imbalance_price",
                 licence="eSett Open Data terms (public, no formal open licence)",
-                coverage_start=start,
+                coverage_start=imbalance_start,
                 coverage_end=end,
                 endpoint=esett.BASE_URL,
-                raw=raw,
+                raw=b"".join(raw_chunks),
                 row_count=row_count,
             )
         )
