@@ -263,5 +263,18 @@ def bridge() -> None:
     typer.echo(f"chapter: {result.chapter_path}")
 
 
+@app.command()
+def figures() -> None:
+    """Render the report figures from pipeline outputs into docs/figures (Phase 7)."""
+    from nordic_power_risk.report.figures import render_all
+
+    config = get_config()
+    written = render_all(config)
+    if not written:
+        typer.echo("no figures rendered: run the pipeline stages first", err=True)
+    typer.echo(f"figures: {len(written)} written -> docs/figures/")
+
+
 if __name__ == "__main__":
     app()
+

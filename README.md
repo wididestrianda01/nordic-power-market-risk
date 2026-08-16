@@ -1,24 +1,51 @@
 # nordic-power-market-risk
 
-A decision and risk system for the Nordic day-ahead, imbalance, and reserve
-power markets (SE3 bidding zone). Pulls public market and weather data,
-lands it in DuckDB with a full source manifest, and builds toward forecasting,
-MILP dispatch optimization, risk-gated position sizing, and settlement.
+A decision and risk system for a small battery in the Swedish SE3 bidding zone. It
+allocates energy and reserve capacity across day-ahead, imbalance, and reserve markets
+(FCR/aFRR/mFRR), then settles every paper position against observed prices.
 
-## Status
+This is a historical decision demonstrator. It places no live orders.
 
-Phase 0 (repo scaffold and ingestion) is complete: `nordic-risk ingest` pulls
-ENTSO-E day-ahead prices, eSett imbalance prices, SvK capacity/price series,
-and SMHI weather observations into DuckDB, with a licence/checksum/coverage
-manifest per source. Forecasting, optimization, risk, and settlement stages
-are scaffolded as CLI subcommands and implemented in later phases.
+## Headline result
+
+On the 11-month walk-forward window (Apr 2025 to Feb 2026), the optimized policy earns
+EUR 483,956 net of declared costs, against EUR 0 for no-trade and EUR 86,516 for the
+heuristic benchmark. The reserve-capacity allocation (FCR/aFRR/mFRR) supplies the bulk of
+the margin; the perfect-foresight bound of EUR 635,813 is a ceiling, not a target.
+
+![Cumulative paper P&L net of costs](docs/figures/hero_cumulative_pnl.png)
+
+The figure renders from the walk-forward outputs through `nordic-risk figures`.
+
+## Real data, real provenance
+
+The data are public and real. Day-ahead prices come from ENTSO-E Transparency Platform and
+Svenska kraftnät. Imbalance prices come from eSett. Weather comes from SMHI. Every source
+carries a manifest with its licence, coverage window, endpoint, pull timestamp, and
+checksum.
+
+## Method in one line
+
+A probabilistic day-ahead price forecast feeds a rolling mixed-integer linear program
+(MILP) that dispatches the battery. A CVaR and drawdown gate blocks any decision that
+breaches tail-risk limits.
+
+## What this is and is not
+
+This is a paper-trading backtest on observed public data. It places no live orders. It
+simulates the control obligations of revised REMIT (EU 2024/1106) Article 5a rather than
+discharging them. The report states this plainly.
+
+## Read more
+
+- [Technical report](docs/report.md): the full methodology, theory, regulation, and
+  decision log.
+- [Results notebook](notebooks/results.ipynb): reproduces the headline figures.
 
 ## Stack
 
-Python 3.13, [uv](https://docs.astral.sh/uv/) for dependency management,
-[typer](https://typer.tiangolo.com/) for the CLI, [DuckDB](https://duckdb.org/)
-for storage, [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
-for config, [pandera](https://pandera.readthedocs.io/) for schema validation.
+Python 3.13, uv, typer, DuckDB, Pyomo + HiGHS, LightGBM, scikit-learn, MLflow, Pandera,
+Evidently, matplotlib.
 
 ## Setup
 
@@ -33,34 +60,10 @@ uv run nordic-risk ingest
 
 ```bash
 uv run ruff check .    # lint
-uv run mypy             # strict type checking
-uv run pytest           # tests, coverage gated at 80%
+uv run mypy            # strict type checking
+uv run pytest          # tests, coverage gated at 80%
 docker build -t nordic-risk .   # multi-stage build, slim runtime image
 ```
 
-CI (GitHub Actions) runs lint, typecheck, test, and a Docker build on every
-push and pull request.
-
-## Architecture
-
-- **CLI** (`src/nordic_power_risk/cli.py`) — one typer command per pipeline stage
-  (`ingest`, `validate`, `features`, `models`, `optimize`, `risk`, `settle`,
-  `monitor`, `promote`). Each command delegates to its own package; no
-  business logic lives in the CLI layer.
-- **Config** (`src/nordic_power_risk/config.py`) — secrets (API tokens, via `.env`) and
-  frozen domain parameters (bidding zone, date windows, storage paths, via
-  `config.yaml`) are kept as two separate, cached accessors.
-- **Ingest** (`src/nordic_power_risk/ingest/`) — one client module per data source
-  (ENTSO-E, eSett, SvK, SMHI), each exposing a `fetch_*` (HTTP) and `parse_*`
-  (pure) function. An orchestrator pulls all four sources into DuckDB and
-  writes a manifest documenting licence, coverage window, endpoint, and
-  checksum for every table written.
-
-## Data sources
-
-| Source | Series | Licence |
-|---|---|---|
-| ENTSO-E Transparency Platform | Day-ahead prices | Platform terms (no bulk redistribution) |
-| eSett Open Data | Imbalance prices | Public, no formal open licence |
-| Svenska kraftnät (SvK) | Day-ahead price, FCR/aFRR/mFRR capacity | CC BY 4.0 |
-| SMHI Open Data | Weather observations | CC BY 4.0 |
+CI (GitHub Actions) runs lint, typecheck, test, and a Docker build on every push and pull
+request.

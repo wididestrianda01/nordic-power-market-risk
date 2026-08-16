@@ -28,8 +28,12 @@ mlflow.db
 ruvector.db
 CLAUDE.md
 
-# Planning docs (internal — see README.md for a project overview)
-docs/
+# Planning docs and interview prep (internal — see README.md and docs/report.md)
+docs/roadmap.md
+docs/spec.md
+docs/tickets/
+docs/wayfinder/
+docs/local/
 .codegraph/
 .serena/
 .worktrees/
