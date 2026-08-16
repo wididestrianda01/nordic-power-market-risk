@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from nordic_power_risk.config import PipelineConfig
@@ -67,30 +66,6 @@ def _flat_risk_schedule(
     ]
 
 
-def _missing_input_record(reason: str, evaluator: RiskEvaluator) -> dict[str, object]:
-    now = datetime.now(UTC).isoformat()
-    return {
-        "decision_timestamp": now,
-        "delivery_time": None,
-        "forecast_quantiles": {},
-        "action": "flat",
-        "charge_mw": 0.0,
-        "discharge_mw": 0.0,
-        "soc_mwh": None,
-        "var_95_eur": None,
-        "cvar_95_eur": None,
-        "var_99_eur": None,
-        "cvar_99_eur": None,
-        "loss_limit_99_eur": None,
-        "realized_daily_loss_eur": None,
-        "drawdown_eur": 0.0,
-        "breach": False,
-        "fallback_reason": reason,
-        "model_version": evaluator.model_version,
-        "git_version": evaluator.git_version,
-    }
-
-
 def _result(
     config: PipelineConfig,
     dispatch: DispatchRunResult,
@@ -136,7 +111,7 @@ def run_risk_backtest(config: PipelineConfig) -> RiskBacktestResult:
     except MissingForecastInputError as exc:
         message = str(exc)
         dispatch = run_flat_dispatch(config, [], solver_status="missing_input")
-        evaluator.records.append(_missing_input_record(f"missing_input:{message}", evaluator))
+        evaluator.record_missing_input(f"missing_input:{message}")
         return _result(config, dispatch, evaluator, outcomes)
 
     def energy_gate(intervals: tuple[DispatchInterval, ...]) -> bool:
@@ -157,7 +132,7 @@ def run_risk_backtest(config: PipelineConfig) -> RiskBacktestResult:
         if schedule:
             outcomes.append(evaluator.record_fallback(schedule, reason))
         else:
-            evaluator.records.append(_missing_input_record(reason, evaluator))
+            evaluator.record_missing_input(reason)
     return _result(config, dispatch, evaluator, outcomes)
 
 

@@ -10,8 +10,12 @@ from math import isfinite
 from typing import Any
 
 from nordic_power_risk.config import DispatchConfig, PipelineConfig
-from nordic_power_risk.facts.rules import day_ahead_issue_time, imbalance_forecast_issue_time
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.facts.rules import (
+    day_ahead_issue_time,
+    delivery_day,
+    imbalance_forecast_issue_time,
+)
+from nordic_power_risk.ingest.duckdb_io import coerce_datetime, get_connection, write_table
 from nordic_power_risk.optimize.dispatch import (
     DispatchForecast,
     DispatchInterval,
@@ -21,12 +25,12 @@ from nordic_power_risk.optimize.dispatch import (
     ReserveForecast,
     ReserveHeadroom,
     ReserveInterval,
-    _delivery_day,
     solve_balancing_reserve_dispatch,
     solve_energy_dispatch,
     solve_imbalance_dispatch,
     solve_reserve_dispatch,
 )
+from nordic_power_risk.reserves import RESERVE_PRODUCTS, forecast_source
 
 RESERVE_DISPATCH_COLUMNS = {
     "product": "VARCHAR",
@@ -99,12 +103,6 @@ class _ImbalanceCommitment:
     solver_status: str
 
 
-def _as_datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
-
-
 def _validate_unique_vintage_deliveries(forecasts: list[DispatchForecast]) -> None:
     seen: set[tuple[datetime, datetime]] = set()
     for forecast in forecasts:
@@ -175,8 +173,8 @@ def _load_imbalance_forecasts(
         price = _imbalance_price(row)
         if price is None:
             continue
-        delivery_time = _as_datetime(row["event_time"])
-        issue_time = _as_datetime(row["issue_time"])
+        delivery_time = coerce_datetime(row["event_time"])
+        issue_time = coerce_datetime(row["issue_time"])
         if issue_time != imbalance_forecast_issue_time(delivery_time):
             continue
         if delivery_time in forecasts:
@@ -236,7 +234,7 @@ def _reserve_datetime(row: dict[str, Any], key: str) -> datetime:
     if value is None:
         raise ValueError(f"forecast_reserve {key} must be a valid timestamp")
     try:
-        return _as_datetime(value)
+        return coerce_datetime(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"forecast_reserve {key} must be a valid timestamp") from exc
 
@@ -245,15 +243,9 @@ def _to_reserve_forecast(row: dict[str, Any], price: float) -> ReserveForecast:
     product = str(row["product"])
     if product == "FFR":
         raise ValueError("unsupported balancing reserve product or direction")
-    expected_source = (
-        "seasonal_naive"
-        if product in {"AFRR", "MFRR"}
-        else "lgbm"
-        if product in {"FCR_N", "FCR_D"}
-        else None
-    )
-    if expected_source is None:
+    if product not in {p for p, _ in RESERVE_PRODUCTS}:
         raise ValueError("unsupported FCR or balancing reserve product or direction")
+    expected_source = forecast_source(product)
     if row["forecast_source"] != expected_source:
         raise ValueError(f"forecast_reserve {product} forecast_source must be {expected_source}")
     return ReserveForecast(
@@ -279,12 +271,12 @@ def _load_reserve_forecasts(
 
 
 def _to_forecast(row: dict[str, Any]) -> DispatchForecast:
-    delivery_time = _as_datetime(row["event_time"])
+    delivery_time = coerce_datetime(row["event_time"])
     cutoff = day_ahead_issue_time(delivery_time)
     if "issue_time" in row:
         if row["issue_time"] is None:
             raise ValueError("explicit forecast issue_time cannot be null")
-        issue_time = _as_datetime(row["issue_time"])
+        issue_time = coerce_datetime(row["issue_time"])
         if issue_time > cutoff:
             raise ValueError("forecast issue_time is later than the day-ahead cutoff")
     else:
@@ -301,17 +293,17 @@ def _calendar_window(
     forecasts: list[DispatchForecast], config: DispatchConfig
 ) -> list[DispatchForecast]:
     ordered = sorted(forecasts, key=lambda forecast: forecast.delivery_time)
-    start_day = _delivery_day(ordered[0].delivery_time)
+    start_day = delivery_day(ordered[0].delivery_time)
     end_day = start_day + timedelta(days=config.horizon_days)
-    return [forecast for forecast in ordered if _delivery_day(forecast.delivery_time) < end_day]
+    return [forecast for forecast in ordered if delivery_day(forecast.delivery_time) < end_day]
 
 
 def _commit_first_day(result: DispatchResult) -> list[_Commitment]:
-    first_day = min(_delivery_day(interval.delivery_time) for interval in result.intervals)
+    first_day = min(delivery_day(interval.delivery_time) for interval in result.intervals)
     return [
         _Commitment(interval, result.solver_status)
         for interval in result.intervals
-        if _delivery_day(interval.delivery_time) == first_day
+        if delivery_day(interval.delivery_time) == first_day
     ]
 
 
@@ -370,7 +362,7 @@ def _zero_blocked_reserve(
             capacity_value_eur=0.0,
             solver_status="risk_blocked",
         )
-        if _delivery_day(interval.delivery_time) in blocked_days
+        if delivery_day(interval.delivery_time) in blocked_days
         else interval
         for interval in intervals
     ]
@@ -458,12 +450,12 @@ def _imbalance_window(
     commitments: list[_Commitment], start: int, config: DispatchConfig
 ) -> list[_Commitment]:
     remaining = commitments[start:]
-    start_day = _delivery_day(remaining[0].interval.delivery_time)
+    start_day = delivery_day(remaining[0].interval.delivery_time)
     end_day = start_day + timedelta(days=config.horizon_days)
     return [
         commitment
         for commitment in remaining
-        if _delivery_day(commitment.interval.delivery_time) < end_day
+        if delivery_day(commitment.interval.delivery_time) < end_day
     ]
 
 
@@ -696,7 +688,7 @@ def _causal_dispatch_stages(
         if energy_gate is not None and energy_gate(
             tuple(item.interval for item in new_commitments)
         ):
-            blocked_day = _delivery_day(new_commitments[0].interval.delivery_time)
+            blocked_day = delivery_day(new_commitments[0].interval.delivery_time)
             blocked_days.add(blocked_day)
             new_commitments = _flat_commitments(new_commitments, initial_soc)
             balancing = _zero_blocked_reserve(balancing, blocked_days, config.optimizer)
@@ -707,9 +699,7 @@ def _causal_dispatch_stages(
     balancing_headroom = _reserve_headroom_objects(balancing, config.optimizer)
     fcr_forecasts = _fcr_forecasts(reserve_forecasts)
     active_fcr = {
-        issue_time: [
-            item for item in items if _delivery_day(item.delivery_time) not in blocked_days
-        ]
+        issue_time: [item for item in items if delivery_day(item.delivery_time) not in blocked_days]
         for issue_time, items in fcr_forecasts.items()
     }
     active_fcr = {key: items for key, items in active_fcr.items() if items}
@@ -718,13 +708,13 @@ def _causal_dispatch_stages(
         _flat_reserve_forecast(item, config.optimizer)
         for items in fcr_forecasts.values()
         for item in items
-        if _delivery_day(item.delivery_time) in blocked_days
+        if delivery_day(item.delivery_time) in blocked_days
     )
     reserve = balancing + fcr
     allowed_imbalance = {
         delivery_time: item
         for delivery_time, item in _load_imbalance_forecasts(config).items()
-        if _delivery_day(delivery_time) not in blocked_days
+        if delivery_day(delivery_time) not in blocked_days
     }
     imbalance = _solve_imbalance_windows(
         commitments,

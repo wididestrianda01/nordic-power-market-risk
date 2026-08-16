@@ -14,7 +14,14 @@ from math import isfinite
 from typing import Any
 
 from nordic_power_risk.config import PipelineConfig
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.energy import energy_value
+from nordic_power_risk.ingest.duckdb_io import (
+    coerce_datetime,
+    coerce_float,
+    get_connection,
+    read_table,
+    write_table,
+)
 from nordic_power_risk.settle.run import reconcile
 
 STRESS_COLUMNS = {"scenario": "VARCHAR", "delta_eur": "DOUBLE"}
@@ -37,37 +44,19 @@ class StressResult:
     scenarios: dict[str, float]
 
 
-def _as_float(value: object) -> float:
-    return float(value) if value is not None else 0.0
-
-
-def _as_datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
-
-
-def _read_rows(config: PipelineConfig, table: str) -> list[dict[str, Any]]:
-    conn = get_connection(config.duckdb_path)
-    try:
-        return conn.execute(f"SELECT * FROM {table}").fetchdf().to_dict("records")
-    finally:
-        conn.close()
-
-
 def _energy_pnl_at_prices(config: PipelineConfig, prices: dict[datetime, float]) -> float:
     """Re-settle dispatch_energy against the given prices, positions fixed."""
     total = 0.0
-    for interval in _read_rows(config, "dispatch_energy"):
-        delivery = _as_datetime(interval["delivery_time"])
+    for interval in read_table(config, "dispatch_energy"):
+        delivery = coerce_datetime(interval["delivery_time"])
         price = prices.get(delivery)
         if price is None or not isfinite(price):
             continue
-        duration = _as_float(interval.get("duration_hours"))
-        charge = _as_float(interval["charge_mw"])
-        discharge = _as_float(interval["discharge_mw"])
-        degradation = _as_float(interval.get("degradation_cost_eur"))
-        total += (discharge - charge) * duration * price - degradation
+        duration = coerce_float(interval.get("duration_hours"))
+        charge = coerce_float(interval["charge_mw"])
+        discharge = coerce_float(interval["discharge_mw"])
+        degradation = coerce_float(interval.get("degradation_cost_eur"))
+        total += energy_value(price, discharge - charge, duration) - degradation
     return total
 
 
@@ -82,8 +71,8 @@ def run_stresses(config: PipelineConfig) -> StressResult:
     baseline = reconcile(config).total_pnl_eur
 
     prices = {
-        _as_datetime(row["event_time"]): _as_float(row["price_eur_mwh"])
-        for row in _read_rows(config, "fact_day_ahead_price")
+        coerce_datetime(row["event_time"]): coerce_float(row["price_eur_mwh"])
+        for row in read_table(config, "fact_day_ahead_price")
     }
 
     scenarios: dict[str, float] = {}

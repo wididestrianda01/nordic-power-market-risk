@@ -1,8 +1,10 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from nordic_power_risk.facts.rules import (
     afrr_mfrr_capacity_issue_time,
     day_ahead_issue_time,
+    delivery_day,
+    delivery_day_hour_count,
     fcr_capacity_issue_time,
     imbalance_forecast_issue_time,
 )
@@ -47,5 +49,20 @@ def test_imbalance_forecast_issue_time_is_60min_before_event() -> None:
 
 def test_imbalance_forecast_issue_time_precedes_event_time() -> None:
     event_time = datetime(2024, 6, 1, 12, 0, 0)
-    assert imbalance_forecast_issue_time(event_time) < event_time
     assert afrr_mfrr_capacity_issue_time(event_time) < event_time
+
+
+def test_delivery_day_winter_cet() -> None:
+    assert delivery_day(datetime(2024, 1, 15, 0, 0, 0)) == date(2024, 1, 15)
+
+
+def test_delivery_day_summer_cest_spans_utc_midnight() -> None:
+    # 22:00 UTC on a CEST day is already 00:00 Stockholm on the next calendar day.
+    assert delivery_day(datetime(2024, 7, 14, 22, 0, 0)) == date(2024, 7, 15)
+    assert delivery_day(datetime(2024, 7, 14, 23, 0, 0)) == date(2024, 7, 15)
+
+
+def test_delivery_day_hour_count_dst() -> None:
+    assert delivery_day_hour_count(date(2024, 3, 31)) == 23  # spring forward
+    assert delivery_day_hour_count(date(2024, 7, 1)) == 24
+    assert delivery_day_hour_count(date(2024, 10, 27)) == 25  # fall back

@@ -4,23 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import datetime, timedelta
 from math import isfinite
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pyomo.environ as pyo
 from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from nordic_power_risk.config import DispatchConfig
+from nordic_power_risk.energy import energy_value, soc_after, soc_before
 from nordic_power_risk.facts.rules import (
     afrr_mfrr_capacity_issue_time,
+    delivery_day,
     fcr_capacity_issue_time,
     imbalance_forecast_issue_time,
 )
 
-_STOCKHOLM = ZoneInfo("Europe/Stockholm")
 POWER_TOLERANCE_MW = 1e-8
 FCR_N_POWER_HEADROOM_FACTOR = 1.34
 FCR_D_OPPOSITE_POWER_FACTOR = 0.2
@@ -155,10 +155,6 @@ class ImbalanceResult:
     solver_status: str
 
 
-def _delivery_day(delivery_time: datetime) -> date:
-    return delivery_time.replace(tzinfo=UTC).astimezone(_STOCKHOLM).date()
-
-
 def _validate_inputs(
     forecasts: Sequence[DispatchForecast],
     config: DispatchConfig,
@@ -166,9 +162,9 @@ def _validate_inputs(
 ) -> None:
     if not forecasts:
         raise ValueError("at least one promoted forecast interval is required")
-    start_day = min(_delivery_day(forecast.delivery_time) for forecast in forecasts)
+    start_day = min(delivery_day(forecast.delivery_time) for forecast in forecasts)
     end_day = start_day + timedelta(days=config.horizon_days)
-    if any(_delivery_day(forecast.delivery_time) >= end_day for forecast in forecasts):
+    if any(delivery_day(forecast.delivery_time) >= end_day for forecast in forecasts):
         raise ValueError("forecast window exceeds configured Stockholm calendar day horizon")
     if len({forecast.issue_time for forecast in forecasts}) != 1:
         raise ValueError("one dispatch window requires one forecast issue_time")
@@ -221,10 +217,12 @@ def _soc_balance(
 ) -> Any:
     previous = config.initial_soc_mwh if index == 0 else model.soc[index - 1]
     duration = forecasts[index].duration_hours
-    return model.soc[index] == (
-        previous
-        + config.one_way_efficiency * model.charge[index] * duration
-        - model.discharge[index] * duration / config.one_way_efficiency
+    return model.soc[index] == soc_after(
+        previous,
+        model.charge[index],
+        model.discharge[index],
+        duration,
+        config.one_way_efficiency,
     )
 
 
@@ -286,7 +284,11 @@ def _add_objective(
     model: Any, forecasts: Sequence[DispatchForecast], config: DispatchConfig
 ) -> None:
     energy_revenue = sum(
-        forecast.price_eur_mwh * (model.discharge[i] - model.charge[i]) * forecast.duration_hours
+        energy_value(
+            forecast.price_eur_mwh,
+            model.discharge[i] - model.charge[i],
+            forecast.duration_hours,
+        )
         for i, forecast in enumerate(forecasts)
     )
     throughput = sum(
@@ -320,7 +322,7 @@ def _interval_values(
     charge = float(pyo.value(model.charge[index]))
     discharge = float(pyo.value(model.discharge[index]))
     duration = forecast.duration_hours
-    energy_revenue = forecast.price_eur_mwh * (discharge - charge) * duration
+    energy_revenue = energy_value(forecast.price_eur_mwh, discharge - charge, duration)
     degradation_cost = config.degradation_cost_eur_mwh * (charge + discharge) * duration
     return charge, discharge, energy_revenue, degradation_cost
 
@@ -422,10 +424,12 @@ def _balancing_soc_balance(
 ) -> Any:
     previous = config.initial_soc_mwh if interval == 0 else model.soc[interval - 1]
     duration = forecasts[rows[interval][0]].duration_hours
-    return model.soc[interval] == (
-        previous
-        + config.one_way_efficiency * model.charge[interval] * duration
-        - model.discharge[interval] * duration / config.one_way_efficiency
+    return model.soc[interval] == soc_after(
+        previous,
+        model.charge[interval],
+        model.discharge[interval],
+        duration,
+        config.one_way_efficiency,
     )
 
 
@@ -601,10 +605,12 @@ def _reserve_down(model: Any, index: int, forecasts: Sequence[ReserveForecast]) 
 
 
 def _energy_start_soc(energy: DispatchInterval, config: DispatchConfig) -> float:
-    return (
-        energy.soc_mwh
-        - config.one_way_efficiency * energy.charge_mw * energy.duration_hours
-        + energy.discharge_mw * energy.duration_hours / config.one_way_efficiency
+    return soc_before(
+        energy.soc_mwh,
+        energy.charge_mw,
+        energy.discharge_mw,
+        energy.duration_hours,
+        config.one_way_efficiency,
     )
 
 
@@ -865,9 +871,9 @@ def _validate_imbalance_inputs(
         raise ValueError("at least one fixed day-ahead commitment is required")
     if len({item.delivery_time for item in inputs}) != len(inputs):
         raise ValueError("imbalance window contains duplicate delivery_time")
-    start_day = min(_delivery_day(item.delivery_time) for item in inputs)
+    start_day = min(delivery_day(item.delivery_time) for item in inputs)
     end_day = start_day + timedelta(days=config.horizon_days)
-    if any(_delivery_day(item.delivery_time) >= end_day for item in inputs):
+    if any(delivery_day(item.delivery_time) >= end_day for item in inputs):
         raise ValueError("imbalance window exceeds configured Stockholm calendar day horizon")
     for dispatch_input in inputs:
         _validate_imbalance_input(dispatch_input, config)
@@ -878,10 +884,12 @@ def _imbalance_soc_balance(
 ) -> Any:
     previous = config.initial_soc_mwh if index == 0 else model.soc[index - 1]
     duration = inputs[index].duration_hours
-    return model.soc[index] == (
-        previous
-        + config.one_way_efficiency * model.charge[index] * duration
-        - model.discharge[index] * duration / config.one_way_efficiency
+    return model.soc[index] == soc_after(
+        previous,
+        model.charge[index],
+        model.discharge[index],
+        duration,
+        config.one_way_efficiency,
     )
 
 
@@ -922,9 +930,11 @@ def _flat_imbalance(model: Any, index: int, inputs: Sequence[ImbalanceDispatchIn
 
 def _imbalance_forecast_value(model: Any, inputs: Sequence[ImbalanceDispatchInput]) -> Any:
     return sum(
-        (_eligible_imbalance_price(item) or 0.0)
-        * model.imbalance_position[index]
-        * item.duration_hours
+        energy_value(
+            _eligible_imbalance_price(item) or 0.0,
+            model.imbalance_position[index],
+            item.duration_hours,
+        )
         for index, item in enumerate(inputs)
     )
 
@@ -1010,7 +1020,7 @@ def _imbalance_values(
     discharge = float(pyo.value(model.discharge[index]))
     position = float(pyo.value(model.imbalance_position[index]))
     price = _eligible_imbalance_price(dispatch_input)
-    forecast_value = (price or 0.0) * position * dispatch_input.duration_hours
+    forecast_value = energy_value(price or 0.0, position, dispatch_input.duration_hours)
     degradation = (
         config.degradation_cost_eur_mwh * (charge + discharge) * dispatch_input.duration_hours
     )

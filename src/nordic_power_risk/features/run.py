@@ -9,6 +9,7 @@ from nordic_power_risk.config import PipelineConfig
 from nordic_power_risk.facts.rules import imbalance_forecast_issue_time
 from nordic_power_risk.features.build import build_day_ahead_features, build_lag_calendar_features
 from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.reserves import RESERVE_PRODUCTS, fact_table, feature_table
 
 
 @dataclass(frozen=True)
@@ -20,13 +21,7 @@ class FeatureBuildResult:
 # Secondary targets (T09 ticket 04): FCR-N/D reuse their fact table's own gate-closure
 # issue_time as-is; imbalance overrides it to the T-60min forecast decision cutoff.
 _SECONDARY_TARGETS = [
-    ("fact_svk_fcr_d_up", "feature_fcr_d_up", "price", None),
-    ("fact_svk_fcr_d_down", "feature_fcr_d_down", "price", None),
-    ("fact_svk_fcr_n", "feature_fcr_n", "price", None),
-    ("fact_svk_afrr_up", "feature_afrr_up", "price", None),
-    ("fact_svk_afrr_down", "feature_afrr_down", "price", None),
-    ("fact_svk_mfrr_up", "feature_mfrr_up", "price", None),
-    ("fact_svk_mfrr_down", "feature_mfrr_down", "price", None),
+    *[(fact_table(p, d), feature_table(p, d), "price", None) for p, d in RESERVE_PRODUCTS],
     (
         "fact_imbalance_price",
         "feature_imbalance",

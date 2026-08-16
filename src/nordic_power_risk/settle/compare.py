@@ -9,12 +9,12 @@ to claim victory over.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from nordic_power_risk.config import PipelineConfig
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
-from nordic_power_risk.optimize.dispatch import _delivery_day
+from nordic_power_risk.facts.rules import delivery_day
+from nordic_power_risk.ingest.duckdb_io import coerce_datetime, get_connection, write_table
 from nordic_power_risk.settle.run import reconcile
 
 COMPARISON_COLUMNS = {"policy": "VARCHAR", "total_pnl_eur": "DOUBLE"}
@@ -24,12 +24,6 @@ COMPARISON_COLUMNS = {"policy": "VARCHAR", "total_pnl_eur": "DOUBLE"}
 class ComparisonResult:
     table: str
     policies: dict[str, float]
-
-
-def _as_datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
 
 
 def _read_day_ahead_prices(config: PipelineConfig) -> list[dict[str, Any]]:
@@ -67,8 +61,8 @@ def compare_policies(config: PipelineConfig) -> ComparisonResult:
     prices = _read_day_ahead_prices(config)
     grouped: dict[date, list[float]] = {}
     for row in prices:
-        event_time = _as_datetime(row["event_time"])
-        day = _delivery_day(event_time)
+        event_time = coerce_datetime(row["event_time"])
+        day = delivery_day(event_time)
         grouped.setdefault(day, []).append(float(row["price_eur_mwh"]))
     days = list(grouped.values())
 

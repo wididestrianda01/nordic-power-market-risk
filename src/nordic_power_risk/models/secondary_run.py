@@ -31,11 +31,10 @@ from nordic_power_risk.models.metrics import (
     pit_values,
     winkler_score,
 )
+from nordic_power_risk.reserves import RESERVE_PRODUCTS, feature_table, forecast_source
 
 SECONDARY_TARGETS: tuple[tuple[str, str], ...] = (
-    ("feature_fcr_d_up", "price"),
-    ("feature_fcr_d_down", "price"),
-    ("feature_fcr_n", "price"),
+    *((feature_table(p, d), "price") for p, d in RESERVE_PRODUCTS if forecast_source(p) == "lgbm"),
     ("feature_imbalance", "imbalance_price_eur_mwh"),
 )
 
@@ -51,15 +50,12 @@ IMBALANCE_FORECAST_COLUMNS = {
     "q0_9": "DOUBLE",
 }
 RESERVE_TARGETS = {
-    "feature_fcr_d_up": ("FCR_D", "up"),
-    "feature_fcr_d_down": ("FCR_D", "down"),
-    "feature_fcr_n": ("FCR_N", "symmetric"),
+    feature_table(p, d): (p, d) for p, d in RESERVE_PRODUCTS if forecast_source(p) == "lgbm"
 }
 TERTIARY_TARGETS = {
-    "feature_afrr_up": ("AFRR", "up"),
-    "feature_afrr_down": ("AFRR", "down"),
-    "feature_mfrr_up": ("MFRR", "up"),
-    "feature_mfrr_down": ("MFRR", "down"),
+    feature_table(p, d): (p, d)
+    for p, d in RESERVE_PRODUCTS
+    if forecast_source(p) == "seasonal_naive"
 }
 RESERVE_FORECAST_COLUMNS = {
     "product": "VARCHAR",
@@ -136,7 +132,7 @@ def _reserve_forecast_rows(
             "q0_1": row["q0_1"],
             "q0_5": row["q0_5"],
             "q0_9": row["q0_9"],
-            "forecast_source": "lgbm",
+            "forecast_source": forecast_source(product),
         }
         for row in rows
     ]
@@ -225,7 +221,7 @@ def _tertiary_rows(
             "q0_1": None,
             "q0_5": float(frame.at[index, "price_lag_168h"]),
             "q0_9": None,
-            "forecast_source": "seasonal_naive",
+            "forecast_source": forecast_source(product),
         }
         for index in frame.index[valid]
     ]

@@ -6,18 +6,22 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
-from math import isfinite, nan
+from math import isfinite
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import duckdb
 
 from nordic_power_risk.config import REPO_ROOT, PipelineConfig
-from nordic_power_risk.ingest.duckdb_io import get_connection
-from nordic_power_risk.optimize.dispatch import _delivery_day
+from nordic_power_risk.energy import soc_before
+from nordic_power_risk.facts.rules import delivery_day, delivery_day_hour_count
+from nordic_power_risk.ingest.duckdb_io import (
+    coerce_datetime,
+    coerce_float,
+    read_table,
+)
 from nordic_power_risk.risk.controls import (
     RiskState,
     empirical_var_cvar,
@@ -26,7 +30,6 @@ from nordic_power_risk.risk.controls import (
 )
 
 _REQUIRED_QUANTILES = (0.01, 0.05, 0.5, 0.95, 0.99)
-_STOCKHOLM = ZoneInfo("Europe/Stockholm")
 
 
 @dataclass(frozen=True)
@@ -69,21 +72,41 @@ class _PendingObservation:
     loss_limit_eur: float
 
 
-def _as_datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
-
-
-def _read_table(config: PipelineConfig, table: str) -> tuple[list[str], list[dict[str, Any]]]:
-    conn = get_connection(config.duckdb_path)
-    try:
-        cursor = conn.execute(f"SELECT * FROM {table} ORDER BY event_time")
-        columns = [column[0] for column in cursor.description]
-        rows = [dict(zip(columns, values, strict=True)) for values in cursor.fetchall()]
-        return columns, rows
-    finally:
-        conn.close()
+def _decision_record(
+    *,
+    decision_timestamp: str,
+    delivery_time: str | None,
+    forecast_quantiles: dict[str, float],
+    action: str,
+    charge_mw: float,
+    discharge_mw: float,
+    soc_mwh: float | None,
+    outcome: RiskGateOutcome,
+    realized_daily_loss_eur: float | None,
+    model_version: str,
+    git_version: str,
+) -> dict[str, object]:
+    """One append-only decision-log line; the single source of the record schema."""
+    return {
+        "decision_timestamp": decision_timestamp,
+        "delivery_time": delivery_time,
+        "forecast_quantiles": forecast_quantiles,
+        "action": action,
+        "charge_mw": charge_mw,
+        "discharge_mw": discharge_mw,
+        "soc_mwh": soc_mwh,
+        "var_95_eur": outcome.var_95_eur,
+        "cvar_95_eur": outcome.cvar_95_eur,
+        "var_99_eur": outcome.var_99_eur,
+        "cvar_99_eur": outcome.cvar_99_eur,
+        "loss_limit_99_eur": outcome.loss_limit_99_eur,
+        "realized_daily_loss_eur": realized_daily_loss_eur,
+        "drawdown_eur": outcome.drawdown_eur,
+        "breach": outcome.breach,
+        "fallback_reason": outcome.fallback_reason,
+        "model_version": model_version,
+        "git_version": git_version,
+    }
 
 
 def _quantile(column: str) -> float | None:
@@ -93,16 +116,6 @@ def _quantile(column: str) -> float | None:
         return float(column[1:].replace("_", "."))
     except ValueError:
         return None
-
-
-def _as_float(value: object) -> float:
-    return nan if value is None else float(value)
-
-
-def _expected_hour_count(day: date) -> int:
-    start = datetime.combine(day, time(), tzinfo=_STOCKHOLM).astimezone(UTC)
-    end = datetime.combine(day + timedelta(days=1), time(), tzinfo=_STOCKHOLM).astimezone(UTC)
-    return int((end - start).total_seconds() / 3600)
 
 
 def _resample_path(values: list[float], interval_count: int) -> list[float]:
@@ -124,15 +137,15 @@ def _resample_path(values: list[float], interval_count: int) -> list[float]:
 def _price_paths_by_day(rows: list[dict[str, Any]], interval_count: int) -> list[list[float]]:
     grouped: dict[date, list[tuple[datetime, float]]] = {}
     for row in rows:
-        event_time = _as_datetime(row["event_time"])
-        price = _as_float(row["price_eur_mwh"])
+        event_time = coerce_datetime(row["event_time"])
+        price = coerce_float(row["price_eur_mwh"])
         if not isfinite(price):
             continue
-        grouped.setdefault(_delivery_day(event_time), []).append((event_time, price))
+        grouped.setdefault(delivery_day(event_time), []).append((event_time, price))
     paths = []
     for day, day_rows in grouped.items():
         values = [price for _, price in sorted(day_rows)]
-        if len(values) != _expected_hour_count(day) and interval_count in (23, 24, 25):
+        if len(values) != delivery_day_hour_count(day) and interval_count in (23, 24, 25):
             continue
         paths.append(_resample_path(values, interval_count))
     return paths
@@ -181,8 +194,9 @@ class RiskEvaluator:
         self._pending: list[_PendingObservation] = []
         self._input_error: str | None = None
         try:
-            self._forecast_columns, self._forecast_rows = _read_table(config, "forecast_day_ahead")
-            _, self._fact_rows = _read_table(config, "fact_day_ahead_price")
+            self._forecast_rows = read_table(config, "forecast_day_ahead")
+            self._forecast_columns = list(self._forecast_rows[0]) if self._forecast_rows else []
+            self._fact_rows = read_table(config, "fact_day_ahead_price")
         except duckdb.Error as exc:
             self._forecast_columns = []
             self._forecast_rows = []
@@ -196,6 +210,35 @@ class RiskEvaluator:
             raise ValueError("a fallback record requires at least one interval")
         return self._blocked(intervals, reason)
 
+    def record_missing_input(self, reason: str) -> None:
+        """Append one flat record for a run with no dispatchable input."""
+        outcome = RiskGateOutcome(
+            blocked=True,
+            breach=False,
+            fallback_reason=reason,
+            var_95_eur=None,
+            cvar_95_eur=None,
+            var_99_eur=None,
+            cvar_99_eur=None,
+            loss_limit_99_eur=None,
+            drawdown_eur=0.0,
+        )
+        self.records.append(
+            _decision_record(
+                decision_timestamp=datetime.now(UTC).isoformat(),
+                delivery_time=None,
+                forecast_quantiles={},
+                action="flat",
+                charge_mw=0.0,
+                discharge_mw=0.0,
+                soc_mwh=None,
+                outcome=outcome,
+                realized_daily_loss_eur=None,
+                model_version=self.model_version,
+                git_version=self.git_version,
+            )
+        )
+
     def advance(self, issue_time: datetime) -> None:
         ready = [item for item in self._pending if item.available_at <= issue_time]
         self._pending = [item for item in self._pending if item.available_at > issue_time]
@@ -203,7 +246,7 @@ class RiskEvaluator:
             self.state.observe(
                 realized_loss_eur=item.realized_loss_eur,
                 loss_limit_eur=item.loss_limit_eur,
-                observed_on=_delivery_day(issue_time),
+                observed_on=delivery_day(issue_time),
             )
 
     def _blocked(
@@ -216,7 +259,7 @@ class RiskEvaluator:
         loss_limit: float | None = None,
     ) -> RiskGateOutcome:
         if breach:
-            self.state.start_cooldown(_delivery_day(intervals[0].delivery_time))
+            self.state.start_cooldown(delivery_day(intervals[0].delivery_time))
         outcome = RiskGateOutcome(
             blocked=True,
             breach=breach,
@@ -235,14 +278,14 @@ class RiskEvaluator:
         if not intervals:
             raise ValueError("a risk decision requires at least one interval")
         issue_times = {item.issue_time for item in intervals}
-        delivery_days = {_delivery_day(item.delivery_time) for item in intervals}
+        delivery_days = {delivery_day(item.delivery_time) for item in intervals}
         if len(issue_times) != 1 or len(delivery_days) != 1:
             raise ValueError("a risk decision must contain one issue time and delivery day")
         if self._input_error is not None:
             return self._blocked(intervals, self._input_error)
 
         issue_time = intervals[0].issue_time
-        delivery_day = _delivery_day(intervals[0].delivery_time)
+        delivery_date = delivery_day(intervals[0].delivery_time)
         self.advance(issue_time)
         quantile_columns = {
             quantile: column
@@ -256,7 +299,7 @@ class RiskEvaluator:
         forecast_by_time: dict[datetime, dict[str, Any]] = {}
         duplicate = False
         for row in self._forecast_rows:
-            event_time = _as_datetime(row["event_time"])
+            event_time = coerce_datetime(row["event_time"])
             if event_time in forecast_by_time:
                 duplicate = True
             forecast_by_time[event_time] = row
@@ -267,7 +310,7 @@ class RiskEvaluator:
         except KeyError:
             return self._blocked(intervals, "missing_forecast_interval")
 
-        month_start = delivery_day.replace(day=1)
+        month_start = delivery_date.replace(day=1)
         training_end = month_start
         primary = self.config.windows.get("primary")
         if primary is None:
@@ -275,7 +318,7 @@ class RiskEvaluator:
         training_rows = [
             row
             for row in self._fact_rows
-            if primary.start <= _delivery_day(_as_datetime(row["event_time"])) < training_end
+            if primary.start <= delivery_day(coerce_datetime(row["event_time"])) < training_end
         ]
         training_paths = _price_paths_by_day(training_rows, len(intervals))
         if not training_paths:
@@ -289,7 +332,7 @@ class RiskEvaluator:
             historical_loss_limit(position, durations, degradation, training_paths),
         )
         price_paths = [
-            [_as_float(row[column]) for row in forecast_rows]
+            [coerce_float(row[column]) for row in forecast_rows]
             for _, column in sorted(quantile_columns.items())
         ]
         if any(not all(isfinite(value) for value in path) for path in price_paths):
@@ -302,7 +345,7 @@ class RiskEvaluator:
         training_prices = [value for path in training_paths for value in path]
         lower = min(training_prices) * 1.2
         upper = max(training_prices) * 1.2
-        medians = [_as_float(row[quantile_columns[0.5]]) for row in forecast_rows]
+        medians = [coerce_float(row[quantile_columns[0.5]]) for row in forecast_rows]
         if any(not isfinite(value) or value < lower or value > upper for value in medians):
             return self._blocked(intervals, "bid_sanity", metrics=metrics, loss_limit=loss_limit)
 
@@ -319,7 +362,7 @@ class RiskEvaluator:
             )
 
         fact_by_time = {
-            _as_datetime(row["event_time"]): _as_float(row["price_eur_mwh"])
+            coerce_datetime(row["event_time"]): coerce_float(row["price_eur_mwh"])
             for row in self._fact_rows
         }
         try:
@@ -366,11 +409,12 @@ class RiskEvaluator:
         flat_soc = None
         if outcome.blocked:
             first = intervals[0]
-            efficiency = self.config.optimizer.one_way_efficiency
-            flat_soc = (
-                first.soc_mwh
-                - efficiency * first.charge_mw * first.duration_hours
-                + first.discharge_mw * first.duration_hours / efficiency
+            flat_soc = soc_before(
+                first.soc_mwh,
+                first.charge_mw,
+                first.discharge_mw,
+                first.duration_hours,
+                self.config.optimizer.one_way_efficiency,
             )
         quantile_columns = {
             quantile: column
@@ -391,26 +435,19 @@ class RiskEvaluator:
                 elif interval.discharge_mw > 0.0:
                     action = "discharge"
             self.records.append(
-                {
-                    "decision_timestamp": interval.issue_time.isoformat(),
-                    "delivery_time": interval.delivery_time.isoformat(),
-                    "forecast_quantiles": quantiles,
-                    "action": action,
-                    "charge_mw": 0.0 if outcome.blocked else interval.charge_mw,
-                    "discharge_mw": 0.0 if outcome.blocked else interval.discharge_mw,
-                    "soc_mwh": flat_soc if flat_soc is not None else interval.soc_mwh,
-                    "var_95_eur": outcome.var_95_eur,
-                    "cvar_95_eur": outcome.cvar_95_eur,
-                    "var_99_eur": outcome.var_99_eur,
-                    "cvar_99_eur": outcome.cvar_99_eur,
-                    "loss_limit_99_eur": outcome.loss_limit_99_eur,
-                    "realized_daily_loss_eur": self.state.last_realized_loss_eur,
-                    "drawdown_eur": outcome.drawdown_eur,
-                    "breach": outcome.breach,
-                    "fallback_reason": outcome.fallback_reason,
-                    "model_version": self.model_version,
-                    "git_version": self.git_version,
-                }
+                _decision_record(
+                    decision_timestamp=interval.issue_time.isoformat(),
+                    delivery_time=interval.delivery_time.isoformat(),
+                    forecast_quantiles=quantiles,
+                    action=action,
+                    charge_mw=0.0 if outcome.blocked else interval.charge_mw,
+                    discharge_mw=0.0 if outcome.blocked else interval.discharge_mw,
+                    soc_mwh=flat_soc if flat_soc is not None else interval.soc_mwh,
+                    outcome=outcome,
+                    realized_daily_loss_eur=self.state.last_realized_loss_eur,
+                    model_version=self.model_version,
+                    git_version=self.git_version,
+                )
             )
 
 
@@ -438,7 +475,7 @@ def read_risk_status(config: PipelineConfig) -> RiskStatus:
         gate_state="blocked" if fallback else "open",
         record_count=len(records),
         last_delivery_time=(
-            _as_datetime(latest["delivery_time"])
+            coerce_datetime(latest["delivery_time"])
             if latest.get("delivery_time") is not None
             else None
         ),

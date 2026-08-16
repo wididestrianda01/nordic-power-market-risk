@@ -6,7 +6,7 @@ DST-aware) and converted to naive UTC to match the raw-table timestamp conventio
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 _STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -68,6 +68,18 @@ def imbalance_forecast_issue_time(event_time_utc: datetime) -> datetime:
     return event_time_utc - IMBALANCE_FORECAST_LEAD
 
 
+def delivery_day(delivery_time: datetime) -> date:
+    """Stockholm calendar day of a naive-UTC delivery timestamp."""
+    return delivery_time.replace(tzinfo=_UTC).astimezone(_STOCKHOLM).date()
+
+
+def delivery_day_hour_count(day: date) -> int:
+    """Hourly delivery intervals in a Stockholm calendar day (23/24/25 across DST)."""
+    start = datetime.combine(day, time(), tzinfo=_STOCKHOLM).astimezone(_UTC)
+    end = datetime.combine(day + timedelta(days=1), time(), tzinfo=_STOCKHOLM).astimezone(_UTC)
+    return int((end - start).total_seconds() / 3600)
+
+
 __all__ = [
     "ACTIVATION_PUBLICATION_LAG",
     "IMBALANCE_ESTIMATED_LAG",
@@ -75,6 +87,8 @@ __all__ = [
     "IMBALANCE_FORECAST_LEAD",
     "afrr_mfrr_capacity_issue_time",
     "day_ahead_issue_time",
+    "delivery_day",
+    "delivery_day_hour_count",
     "fcr_capacity_issue_time",
     "reserve_volume_issue_time",
 ]

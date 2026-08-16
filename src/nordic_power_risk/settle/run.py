@@ -11,12 +11,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from math import isfinite, nan
+from math import isfinite
 from typing import Any
 
 from nordic_power_risk.config import PipelineConfig
-from nordic_power_risk.ingest.duckdb_io import get_connection, write_table
+from nordic_power_risk.energy import energy_value
+from nordic_power_risk.ingest.duckdb_io import (
+    coerce_datetime,
+    coerce_float,
+    get_connection,
+    read_table,
+    write_table,
+)
 from nordic_power_risk.ingest.entsoe import ACTIVATION_PROCESS_TYPES
+from nordic_power_risk.reserves import RESERVE_PRODUCTS, fact_table
 
 SETTLEMENT_COLUMNS = {
     "delivery_time": "TIMESTAMP",
@@ -32,48 +40,30 @@ class SettlementResult:
     total_pnl_eur: float
 
 
-def _read_rows(config: PipelineConfig, table: str) -> list[dict[str, Any]]:
-    conn = get_connection(config.duckdb_path)
-    try:
-        return conn.execute(f"SELECT * FROM {table}").fetchdf().to_dict("records")
-    finally:
-        conn.close()
-
-
-def _as_datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
-
-
-def _as_float(value: object) -> float:
-    return nan if value is None else float(value)
-
-
 def _energy_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
     """Settle day-ahead energy against realized day-ahead prices.
 
     Degradation is emitted by `_imbalance_settlement` (the actual physical
     throughput subsumes the day-ahead commitment), never here.
     """
-    energy_rows = _read_rows(config, "dispatch_energy")
+    energy_rows = read_table(config, "dispatch_energy")
     prices = {
-        _as_datetime(row["event_time"]): _as_float(row["price_eur_mwh"])
-        for row in _read_rows(config, "fact_day_ahead_price")
+        coerce_datetime(row["event_time"]): coerce_float(row["price_eur_mwh"])
+        for row in read_table(config, "fact_day_ahead_price")
     }
 
     rows: list[dict[str, Any]] = []
     for interval in energy_rows:
-        delivery = _as_datetime(interval["delivery_time"])
+        delivery = coerce_datetime(interval["delivery_time"])
         price = prices.get(delivery)
         if price is None or not isfinite(price):
             # Fail closed: no observed price -> interval left unsettled.
             continue
-        duration = _as_float(interval["duration_hours"])
-        charge = _as_float(interval["charge_mw"])
-        discharge = _as_float(interval["discharge_mw"])
-        revenue = discharge * duration * price
-        purchase = -charge * duration * price
+        duration = coerce_float(interval["duration_hours"])
+        charge = coerce_float(interval["charge_mw"])
+        discharge = coerce_float(interval["discharge_mw"])
+        revenue = energy_value(price, discharge, duration)
+        purchase = energy_value(price, -charge, duration)
         rows.append(
             {"delivery_time": delivery, "component": "day_ahead_revenue", "value_eur": revenue}
         )
@@ -85,12 +75,12 @@ def _energy_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
 
 def _imbalance_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
     """Settle imbalance positions at the final imbalance price (estimated as fallback)."""
-    imbalance_rows = _read_rows(config, "dispatch_imbalance")
+    imbalance_rows = read_table(config, "dispatch_imbalance")
     final_prices: dict[datetime, float] = {}
     estimated_prices: dict[datetime, float] = {}
-    for row in _read_rows(config, "fact_imbalance_price"):
-        event_time = _as_datetime(row["event_time"])
-        price = _as_float(row["imbalance_price_eur_mwh"])
+    for row in read_table(config, "fact_imbalance_price"):
+        event_time = coerce_datetime(row["event_time"])
+        price = coerce_float(row["imbalance_price_eur_mwh"])
         if row["price_type"] == "final":
             final_prices[event_time] = price
         else:
@@ -98,58 +88,38 @@ def _imbalance_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for interval in imbalance_rows:
-        delivery = _as_datetime(interval["delivery_time"])
+        delivery = coerce_datetime(interval["delivery_time"])
         price = final_prices.get(delivery, estimated_prices.get(delivery))
         if price is None or not isfinite(price):
             continue
-        duration = _as_float(interval["duration_hours"])
-        position = _as_float(interval["imbalance_position_mw"])
+        duration = coerce_float(interval["duration_hours"])
+        position = coerce_float(interval["imbalance_position_mw"])
         rows.append(
             {
                 "delivery_time": delivery,
                 "component": "imbalance",
-                "value_eur": position * duration * price,
+                "value_eur": energy_value(price, position, duration),
             }
         )
         rows.append(
             {
                 "delivery_time": delivery,
                 "component": "degradation",
-                "value_eur": -_as_float(interval["degradation_cost_eur"]),
+                "value_eur": -coerce_float(interval["degradation_cost_eur"]),
             }
         )
     return rows
 
 
-def _capacity_fact_table(product: str, direction: str) -> str | None:
-    """Map a dispatched reserve product/direction to its observed-capacity fact table."""
-    if product == "FCR_D":
-        return f"fact_svk_fcr_d_{direction}"
-    if product == "FCR_N":
-        return "fact_svk_fcr_n"
-    if product in {"AFRR", "MFRR"}:
-        # aFRR/mFRR capacity is split by product/direction into its own fact table.
-        return f"fact_svk_{product.lower()}_{direction}"
-    return None
-
-
 def _reserve_capacity_settlement(config: PipelineConfig) -> list[dict[str, Any]]:
     """Settle conditionally-accepted reserve capacity at observed capacity prices."""
-    reserve_rows = _read_rows(config, "dispatch_reserve")
+    reserve_rows = read_table(config, "dispatch_reserve")
     price_lookups = {
         table: {
-            _as_datetime(row["event_time"]): _as_float(row["price"])
-            for row in _read_rows(config, table)
+            coerce_datetime(row["event_time"]): coerce_float(row["price"])
+            for row in read_table(config, table)
         }
-        for table in (
-            "fact_svk_fcr_d_up",
-            "fact_svk_fcr_d_down",
-            "fact_svk_fcr_n",
-            "fact_svk_afrr_up",
-            "fact_svk_afrr_down",
-            "fact_svk_mfrr_up",
-            "fact_svk_mfrr_down",
-        )
+        for table in (fact_table(p, d) for p, d in RESERVE_PRODUCTS)
     }
 
     rows: list[dict[str, Any]] = []
@@ -157,15 +127,15 @@ def _reserve_capacity_settlement(config: PipelineConfig) -> list[dict[str, Any]]
         if not interval.get("conditional_acceptance"):
             # Not accepted (or risk-blocked flat) -> no capacity revenue.
             continue
-        table = _capacity_fact_table(str(interval["product"]), str(interval["direction"]))
-        if table is None:
+        table = fact_table(str(interval["product"]), str(interval["direction"]))
+        if table not in price_lookups:
             continue
-        delivery = _as_datetime(interval["delivery_time"])
+        delivery = coerce_datetime(interval["delivery_time"])
         price = price_lookups[table].get(delivery)
         if price is None or not isfinite(price):
             continue
-        capacity = _as_float(interval["capacity_mw"])
-        duration = _as_float(interval["duration_hours"])
+        capacity = coerce_float(interval["capacity_mw"])
+        duration = coerce_float(interval["duration_hours"])
         rows.append(
             {
                 "delivery_time": delivery,
@@ -187,23 +157,23 @@ def _reserve_activation_settlement(config: PipelineConfig) -> list[dict[str, Any
     when A84 is unavailable. FCR-N symmetric activation nets to ~zero and is skipped;
     FCR-D and FFR activated energy are not published (T03) and settle no activation.
     """
-    reserve_rows = _read_rows(config, "dispatch_reserve")
+    reserve_rows = read_table(config, "dispatch_reserve")
     activation: dict[tuple[datetime, str, str], float] = {}
-    for row in _read_rows(config, "fact_activation"):
-        key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
-        activation[key] = _as_float(row["activated_mw"])
+    for row in read_table(config, "fact_activation"):
+        key = (coerce_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
+        activation[key] = coerce_float(row["activated_mw"])
     procured: dict[tuple[datetime, str, str], float] = {}
-    for row in _read_rows(config, "fact_reserve_volume"):
-        key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
-        procured[key] = _as_float(row["procured_mw"])
+    for row in read_table(config, "fact_reserve_volume"):
+        key = (coerce_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
+        procured[key] = coerce_float(row["procured_mw"])
     activation_prices: dict[tuple[datetime, str, str], float] = {}
-    for row in _read_rows(config, "fact_activation_price"):
-        key = (_as_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
-        activation_prices[key] = _as_float(row["activation_price_eur_mwh"])
+    for row in read_table(config, "fact_activation_price"):
+        key = (coerce_datetime(row["event_time"]), str(row["product"]), str(row["direction"]))
+        activation_prices[key] = coerce_float(row["activation_price_eur_mwh"])
     final_prices: dict[datetime, float] = {}
-    for row in _read_rows(config, "fact_imbalance_price"):
+    for row in read_table(config, "fact_imbalance_price"):
         if row["price_type"] == "final":
-            final_prices[_as_datetime(row["event_time"])] = _as_float(
+            final_prices[coerce_datetime(row["event_time"])] = coerce_float(
                 row["imbalance_price_eur_mwh"]
             )
 
@@ -211,7 +181,7 @@ def _reserve_activation_settlement(config: PipelineConfig) -> list[dict[str, Any
     for interval in reserve_rows:
         if not interval.get("conditional_acceptance"):
             continue
-        delivery = _as_datetime(interval["delivery_time"])
+        delivery = coerce_datetime(interval["delivery_time"])
         product = str(interval["product"])
         direction = str(interval["direction"])
         if direction == "symmetric" or product not in ACTIVATION_PROCESS_TYPES:
@@ -222,8 +192,8 @@ def _reserve_activation_settlement(config: PipelineConfig) -> list[dict[str, Any
         total_procured = procured.get((delivery, product, direction))
         if total_procured is None or not isfinite(total_procured) or total_procured <= 0:
             continue  # fail-closed: no denominator -> no pro-rata share
-        capacity = _as_float(interval["capacity_mw"])
-        duration = _as_float(interval["duration_hours"])
+        capacity = coerce_float(interval["capacity_mw"])
+        duration = coerce_float(interval["duration_hours"])
         share = min(capacity / total_procured, 1.0)
         energy = share * aggregate * duration
         price = activation_prices.get((delivery, product, direction))
@@ -281,9 +251,9 @@ class ReconciliationResult:
 def reconcile(config: PipelineConfig) -> ReconciliationResult:
     """Group settlement by component; report total and any unallocated residual."""
     components: dict[str, float] = {}
-    for row in _read_rows(config, "settlement"):
+    for row in read_table(config, "settlement"):
         component = str(row["component"])
-        value = _as_float(row["value_eur"])
+        value = coerce_float(row["value_eur"])
         components[component] = components.get(component, 0.0) + value
 
     total = sum(components.values())
